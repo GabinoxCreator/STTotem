@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.STTotem" parent="Theme.Material3.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/black</item>
+        <item name="android:navigationBarColor">@android:color/black</item>
+        <item name="android:windowFullscreen">true</item>
+    </style>
+</resources>
