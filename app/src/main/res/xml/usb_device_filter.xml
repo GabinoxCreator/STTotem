@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Filtro USB para o pinpad Gertec PPC-930.
+    Concede permissão USB automática e persistente quando o device casa,
+    evitando o diálogo runtime (UsbManager.requestPermission) no attach.
+
+    Device real confirmado no totem (dumpsys usb):
+      vendor-id: 0x1753 (decimal: 5971), product-id: 0xC902 (decimal: 51458)
+      product_name: "PPC930 Pinpad Terminal"
+
+    vendor-id 1317 (0x0525, Gertec/NETCHIP) mantido por compatibilidade legada.
+    Se não casar, rode: adb shell dumpsys usb  (procure vendor_id/product_id)
+    e ajuste conforme o device mostrar.
+-->
+<resources>
+    <usb-device vendor-id="5971" product-id="51458" />
+    <usb-device vendor-id="1317" />
+</resources>

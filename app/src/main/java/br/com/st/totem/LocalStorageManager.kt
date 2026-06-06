@@ -46,6 +46,14 @@ class LocalStorageManager(context: Context) {
         return prefs.getString("identifier", null)
     }
 
+    fun saveSitefOtp(value: String?) {
+        prefs.edit().putString("sitef_otp", value).apply()
+    }
+
+    fun getSitefOtp(): String? {
+        return prefs.getString("sitef_otp", null)
+    }
+
     fun isActivated(): Boolean {
         return !getActivationToken().isNullOrBlank()
     }
@@ -57,6 +65,7 @@ class LocalStorageManager(context: Context) {
             .remove("company_id")
             .remove("location_id")
             .remove("identifier")
+            .remove("sitef_otp")
             .apply()
     }
 }

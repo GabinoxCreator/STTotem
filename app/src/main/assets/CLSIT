@@ -1,0 +1,11 @@
+[SiTef]
+IP=66.22.76.37
+Porta=4096
+StoreId=THEO0167
+
+[PinPadCompartilhado]
+Porta=AUTO_USB
+
+[CliSiTef]
+DiretorioTrace=./files
+HabilitaTrace=1

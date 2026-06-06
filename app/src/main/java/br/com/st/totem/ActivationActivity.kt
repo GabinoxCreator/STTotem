@@ -51,22 +51,33 @@ class ActivationActivity : AppCompatActivity() {
         repository.activate(
             requestData = ActivationRequest(
                 activation_code = code,
-                app_version = "1.0.0"
+                app_version = getAppVersionName()
             ),
             onSuccess = { result ->
                 runOnUiThread {
                     progressBar.visibility = View.GONE
                     btnActivate.isEnabled = true
 
-                    storage.saveActivationToken(result.activationToken ?: "")
+                    val token = result.activationToken ?: ""
+
+                    if (token.isBlank()) {
+                        txtError.visibility = View.VISIBLE
+                        txtError.text = "Token de ativação não retornado."
+                        return@runOnUiThread
+                    }
+
+                    storage.clearActivation()
+                    storage.saveActivationToken(token)
                     storage.saveTotemId(result.totemId)
                     storage.saveCompanyId(result.companyId)
                     storage.saveLocationId(result.locationId)
                     storage.saveIdentifier(result.identifier)
 
-                    val intent = Intent(this, MainActivity::class.java)
-                    intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+                    val intent = Intent(this, MainActivity::class.java).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+                    }
                     startActivity(intent)
+                    finish()
                 }
             },
             onError = { message ->
@@ -74,9 +85,17 @@ class ActivationActivity : AppCompatActivity() {
                     progressBar.visibility = View.GONE
                     btnActivate.isEnabled = true
                     txtError.visibility = View.VISIBLE
-                    txtError.text = message
+                    txtError.text = message.ifBlank { "Falha ao ativar o totem." }
                 }
             }
         )
+    }
+
+    private fun getAppVersionName(): String {
+        return try {
+            packageManager.getPackageInfo(packageName, 0).versionName ?: "1.0.0"
+        } catch (_: Exception) {
+            "1.0.0"
+        }
     }
 }
