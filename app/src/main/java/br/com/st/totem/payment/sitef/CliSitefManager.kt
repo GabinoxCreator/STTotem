@@ -161,9 +161,11 @@ class CliSitefManager(
                 "GSurf.OTP=$sitefOtp;" +
                 "TerminalUUID=$CNPJ_CPF;]"
 
+        val terminalId = storage.getSitefTerminalId()?.trim()?.takeIf { it.isNotBlank() } ?: CNPJ_AUTOMACAO
+
         Log.i(TAG, "╔══════════════════════════════════════════════")
         Log.i(TAG, "║ startPayment method=$paymentMethod modal=$modalidade")
-        Log.i(TAG, "║ valor=$valorStr (${amountCents}c) | terminalId=$CNPJ_AUTOMACAO")
+        Log.i(TAG, "║ valor=$valorStr (${amountCents}c) | terminalId=$terminalId")
         Log.i(TAG, "║ params=$params")
         Log.i(TAG, "╚══════════════════════════════════════════════")
 
@@ -177,7 +179,7 @@ class CliSitefManager(
         executor.execute {
             try {
                 val configResult = cliSiTef.configure(
-                    ENDERECO_SITEF, EMPRESA_SITEF, CNPJ_AUTOMACAO, params
+                    ENDERECO_SITEF, EMPRESA_SITEF, terminalId, params
                 )
 
                 if (configResult != 0) {

@@ -46,7 +46,24 @@ data class PrintPayload(
     val unit_number: Int? = null,
     val total_units: Int? = null,
     val unit_price: Double? = null,
-    val subtotal: Double? = null
+    val subtotal: Double? = null,
+
+    // Ingresso (Bloco 2): print_job tipo "ingresso".
+    // Caso de 1 ingresso por job → campos no topo do payload.
+    // Caso de vários ingressos no mesmo job → lista `ingressos`.
+    val event_name: String? = null,
+    val lot_name: String? = null,
+    val ticket_code: String? = null,
+    val qr_payload: String? = null,
+    val ingressos: List<IngressoTicket> = emptyList()
+)
+
+// Um ingresso emitido. qr_payload = string CRUA validada na portaria (NUNCA reformatar).
+data class IngressoTicket(
+    val event_name: String? = null,
+    val lot_name: String? = null,
+    val ticket_code: String? = null,
+    val qr_payload: String? = null
 )
 
 data class PrintItem(

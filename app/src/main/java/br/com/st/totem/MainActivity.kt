@@ -478,6 +478,7 @@ class MainActivity : AppCompatActivity() {
                     storage.saveLocationId(result.locationId)
                     storage.saveIdentifier(result.identifier)
                     storage.saveSitefOtp(result.sitefOtp)
+                    storage.saveSitefTerminalId(result.sitefTerminalId)
                     bootstrapLoaded = true
                     sendEvent("app_opened", JSONObject().put("mode", "token_bootstrap"))
                     startHeartbeatLoop(); startPrintQueueLoop()

@@ -4,6 +4,8 @@ import android.content.Context
 import android.graphics.BitmapFactory
 import android.util.Base64
 import android.util.Log
+import br.com.gertec.easylayer.printer.BarcodeFormat
+import br.com.gertec.easylayer.printer.BarcodeType
 import br.com.gertec.easylayer.printer.CutType
 import br.com.gertec.easylayer.printer.Printer
 import br.com.gertec.easylayer.printer.PrinterError
@@ -169,6 +171,11 @@ class PrinterManager(
                 jobType == "ticket" -> {
                     Log.d("PRINT_DEBUG", "Roteando para printStyledTicket()")
                     printStyledTicket(job, onSuccess, onError)
+                }
+
+                jobType == "ingresso" -> {
+                    Log.d("PRINT_DEBUG", "Roteando para printIngresso()")
+                    printIngresso(job, onSuccess, onError)
                 }
 
                 hasTickets && shouldPrintCustomerReceipt -> {
@@ -393,6 +400,158 @@ class PrinterManager(
             Log.e("STTotem", "Falha ao imprimir ticket estilizado", e)
             onError("Falha ao imprimir ticket: ${e.message}")
         }
+    }
+
+    // ===== Ingresso de evento (Bloco 2) =====
+    // Para CADA ingresso: bloco de texto em HTML (evento, lote, código legível) +
+    // QR NATIVO do qr_payload CRU via EasyLayer (printBarcode QR_CODE), rasterizado
+    // em módulos inteiros (sem anti-aliasing) p/ leitura confiável no térmico.
+    private fun printIngresso(
+        job: PrintJob,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) {
+        try {
+            val printerInstance = requirePrinterInitialized(onError) ?: return
+            val payload = job.payload
+
+            // Unifica: lista `ingressos` OU o ingresso único (campos no topo do payload).
+            val source = if (payload?.ingressos?.isNotEmpty() == true) {
+                payload.ingressos
+            } else {
+                listOf(
+                    IngressoTicket(
+                        event_name = payload?.event_name,
+                        lot_name = payload?.lot_name,
+                        ticket_code = payload?.ticket_code,
+                        qr_payload = payload?.qr_payload
+                    )
+                )
+            }
+            // Sem qr_payload não há o que escanear — descarta esses.
+            val ingressos = source.filter { !it.qr_payload.isNullOrBlank() }
+
+            if (ingressos.isEmpty()) {
+                Log.w("PRINT_DEBUG", "printIngresso() sem qr_payload -> nada a imprimir")
+                onError("Ingresso sem qr_payload")
+                return
+            }
+
+            val brandName = cleanNullableText(payload?.brand_name, "ST Totem")
+            val logoDataUri = normalizeNullable(payload?.brand_logo_url)?.let { loadLogoAsDataUri(it) }
+            val date = PrinterUtils.formatDate(normalizeNullable(payload?.created_at) ?: job.created_at)
+
+            Log.d("PRINT_DEBUG", "printIngresso() -> quantidade=${ingressos.size} | hasLogo=${logoDataUri != null}")
+
+            ingressos.forEachIndexed { index, ing ->
+                val n = index + 1
+                waitUntilPrinterReady(printerInstance, "antes_ingresso_$n")
+
+                // 1) Bloco de texto (HTML) — reusa o estilo dos vouchers
+                val html = buildIngressoHtml(
+                    eventName = cleanNullableText(ing.event_name ?: payload?.event_name, "Evento"),
+                    lotName = cleanNullableText(ing.lot_name ?: payload?.lot_name, ""),
+                    ticketCode = cleanNullableText(ing.ticket_code, ""),
+                    brandName = brandName,
+                    logoDataUri = logoDataUri,
+                    date = date
+                )
+                printerInstance.printHtml(context, html)
+                waitUntilPrinterReady(printerInstance, "apos_html_ingresso_$n")
+
+                // 2) QR NATIVO — qr_payload CRU, sem reformatar
+                val qrRaw = ing.qr_payload!! // já filtrado não-nulo/não-vazio
+                val format = BarcodeFormat(BarcodeType.QR_CODE, BarcodeFormat.Size.HALF_PAPER)
+                printerInstance.printBarcode(format, qrRaw)
+                waitUntilPrinterReady(printerInstance, "apos_qr_ingresso_$n")
+
+                // 3) Avanço + corte (padrão das fichas) + estabilização
+                printerInstance.scrollPaper(voucherPreCutFeedLines)
+                Thread.sleep(voucherFlushDelayMs)
+                waitUntilPrinterReady(printerInstance, "apos_scroll_pre_cut_ingresso_$n")
+
+                printerInstance.cutPaper(CutType.PAPER_PARTIAL_CUT)
+                Thread.sleep(voucherAfterCutDelayMs)
+                waitUntilPrinterReady(printerInstance, "apos_cut_ingresso_$n")
+
+                if (index < ingressos.lastIndex) {
+                    printerInstance.scrollPaper(voucherPostCutFeedLines)
+                    Thread.sleep(voucherAfterPostCutFeedDelayMs)
+                    waitUntilPrinterReady(printerInstance, "apos_scroll_post_cut_ingresso_$n")
+                    Thread.sleep(voucherInterPrintDelayMs)
+                }
+            }
+
+            onSuccess()
+        } catch (e: Exception) {
+            Log.e("STTotem", "Falha ao imprimir ingresso", e)
+            onError("Falha ao imprimir ingresso: ${e.message}")
+        }
+    }
+
+    private fun buildIngressoHtml(
+        eventName: String,
+        lotName: String,
+        ticketCode: String,
+        brandName: String,
+        logoDataUri: String?,
+        date: String
+    ): String {
+        val safeEvent = escapeHtml(PrinterUtils.truncate(eventName, 40))
+        val safeLot = escapeHtml(PrinterUtils.truncate(lotName, 32))
+        val safeCode = escapeHtml(ticketCode)
+        val safeBrand = escapeHtml(PrinterUtils.truncate(brandName, 28))
+        val safeDate = escapeHtml(date)
+
+        val logoOrBrand = if (!logoDataUri.isNullOrBlank()) {
+            """<img src="$logoDataUri" style="max-width:300px; max-height:120px; width:70%;" />"""
+        } else {
+            """<span style="font-weight:bold; font-size:18px;">$safeBrand</span>"""
+        }
+
+        val lotLine = if (safeLot.isNotBlank()) {
+            """<div style="font-size:18px; margin:2px 0 6px 0;">$safeLot</div>"""
+        } else {
+            ""
+        }
+
+        val codeBlock = if (safeCode.isNotBlank()) {
+            """
+            <hr style="border:none; border-top:1px dashed #000; margin:8px 0;">
+            <div style="font-size:12px;">CODIGO DO INGRESSO</div>
+            <div style="font-family:monospace; font-size:15px; font-weight:bold; word-break:break-all; margin:2px 0 6px 0;">$safeCode</div>
+            """
+        } else {
+            ""
+        }
+
+        return """
+            <html>
+            <body style="font-family: monospace; margin:0; padding:0; text-align:center;">
+                <div style="border:2px solid #000; padding:8px; margin:0;">
+
+                    <div style="background:#000; color:#fff; font-weight:bold; font-size:20px; padding:6px 0; margin-bottom:8px;">
+                        INGRESSO
+                    </div>
+
+                    <div style="font-size:22px; font-weight:bold; margin:4px 0;">
+                        $safeEvent
+                    </div>
+
+                    $lotLine
+
+                    <div style="margin:6px 0;">
+                        $logoOrBrand
+                    </div>
+
+                    $codeBlock
+
+                    <div style="font-size:12px; margin-top:6px;">Apresente o QR abaixo na entrada</div>
+                    <div style="font-size:11px; margin-top:4px;">$safeDate</div>
+                </div>
+            </body>
+            </html>
+        """.trimIndent()
     }
 
     private fun buildStyledVoucherHtml(

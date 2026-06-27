@@ -31,5 +31,6 @@ data class BootstrapResponse(
     val companyId: String? = null,
     val locationId: String? = null,
     val sitefOtp: String? = null,
+    val sitefTerminalId: String? = null,
     val errorMessage: String? = null
 )

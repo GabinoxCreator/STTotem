@@ -96,7 +96,14 @@ class PrintQueueRepository {
                                 unit_number = payloadJson?.optNullableInt("unit_number"),
                                 total_units = payloadJson?.optNullableInt("total_units"),
                                 unit_price = payloadJson?.optNullableDouble("unit_price"),
-                                subtotal = payloadJson?.optNullableDouble("subtotal")
+                                subtotal = payloadJson?.optNullableDouble("subtotal"),
+
+                                // Ingresso (Bloco 2). qr_payload lido CRU (sem trim/normalize).
+                                event_name = payloadJson?.optString("event_name").nullIfBlank(),
+                                lot_name = payloadJson?.optString("lot_name").nullIfBlank(),
+                                ticket_code = payloadJson?.optString("ticket_code").nullIfBlank(),
+                                qr_payload = payloadJson?.optRawString("qr_payload"),
+                                ingressos = parseIngressos(payloadJson)
                             )
 
                             val job = PrintJob(
@@ -280,6 +287,32 @@ class PrintQueueRepository {
         } else {
             trimmed
         }
+    }
+
+    // Lê a string EXATAMENTE como veio (sem trim/normalize). Usado no qr_payload, que
+    // é validado na portaria e não pode ser reformatado. Só vira null se ausente/vazia.
+    private fun JSONObject.optRawString(name: String): String? {
+        if (!has(name) || isNull(name)) return null
+        val v = optString(name)
+        return if (v.isEmpty()) null else v
+    }
+
+    // Lista opcional de ingressos (caso de vários no mesmo job). qr_payload CRU.
+    private fun parseIngressos(payloadJson: JSONObject?): List<IngressoTicket> {
+        val arr = payloadJson?.optJSONArray("ingressos") ?: return emptyList()
+        val out = mutableListOf<IngressoTicket>()
+        for (j in 0 until arr.length()) {
+            val o = arr.getJSONObject(j)
+            out.add(
+                IngressoTicket(
+                    event_name = o.optString("event_name").nullIfBlank(),
+                    lot_name = o.optString("lot_name").nullIfBlank(),
+                    ticket_code = o.optString("ticket_code").nullIfBlank(),
+                    qr_payload = o.optRawString("qr_payload")
+                )
+            )
+        }
+        return out
     }
 
     private fun JSONObject.optNullableInt(name: String): Int? {
