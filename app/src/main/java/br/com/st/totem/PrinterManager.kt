@@ -437,35 +437,41 @@ class PrinterManager(
                 return
             }
 
-            val brandName = cleanNullableText(payload?.brand_name, "ST Totem")
-            val logoDataUri = normalizeNullable(payload?.brand_logo_url)?.let { loadLogoAsDataUri(it) }
             val date = PrinterUtils.formatDate(normalizeNullable(payload?.created_at) ?: job.created_at)
+            // Logo FestPag embarcada (res/drawable), decodificada uma vez. Sai NO RODAPÉ,
+            // depois do QR — não usa mais a brand_logo_url do evento.
+            val festpagLogoUri = loadDrawableAsDataUri(R.drawable.festpag_print_logo)
 
-            Log.d("PRINT_DEBUG", "printIngresso() -> quantidade=${ingressos.size} | hasLogo=${logoDataUri != null}")
+            Log.d("PRINT_DEBUG", "printIngresso() -> quantidade=${ingressos.size} | festpagLogo=${festpagLogoUri != null}")
 
             ingressos.forEachIndexed { index, ing ->
                 val n = index + 1
                 waitUntilPrinterReady(printerInstance, "antes_ingresso_$n")
 
-                // 1) Bloco de texto (HTML) — reusa o estilo dos vouchers
+                // 1) Texto: NOME DO EVENTO + CÓDIGO CURTO (8 chars). Sem o UUID longo.
+                val shortCode = (ing.ticket_code ?: "").take(8).uppercase()
                 val html = buildIngressoHtml(
                     eventName = cleanNullableText(ing.event_name ?: payload?.event_name, "Evento"),
-                    lotName = cleanNullableText(ing.lot_name ?: payload?.lot_name, ""),
-                    ticketCode = cleanNullableText(ing.ticket_code, ""),
-                    brandName = brandName,
-                    logoDataUri = logoDataUri,
+                    shortCode = shortCode,
                     date = date
                 )
                 printerInstance.printHtml(context, html)
                 waitUntilPrinterReady(printerInstance, "apos_html_ingresso_$n")
 
-                // 2) QR NATIVO — qr_payload CRU, sem reformatar
+                // 2) QR NATIVO GRANDE — qr_payload CRU (ticket_code inteiro), FULL_PAPER.
+                //    Conteúdo do QR inalterado; só o tamanho mudou (é o que a portaria valida).
                 val qrRaw = ing.qr_payload!! // já filtrado não-nulo/não-vazio
-                val format = BarcodeFormat(BarcodeType.QR_CODE, BarcodeFormat.Size.HALF_PAPER)
+                val format = BarcodeFormat(BarcodeType.QR_CODE, BarcodeFormat.Size.FULL_PAPER)
                 printerInstance.printBarcode(format, qrRaw)
                 waitUntilPrinterReady(printerInstance, "apos_qr_ingresso_$n")
 
-                // 3) Avanço + corte (padrão das fichas) + estabilização
+                // 3) Logo FestPag no rodapé (mesmo caminho de imagem: base64 no HTML).
+                if (festpagLogoUri != null) {
+                    printerInstance.printHtml(context, buildIngressoLogoHtml(festpagLogoUri))
+                    waitUntilPrinterReady(printerInstance, "apos_logo_ingresso_$n")
+                }
+
+                // 4) Avanço + corte (padrão das fichas) + estabilização
                 printerInstance.scrollPaper(voucherPreCutFeedLines)
                 Thread.sleep(voucherFlushDelayMs)
                 waitUntilPrinterReady(printerInstance, "apos_scroll_pre_cut_ingresso_$n")
@@ -489,38 +495,20 @@ class PrinterManager(
         }
     }
 
+    // Layout do ingresso: NOME DO EVENTO (topo, grande) + CÓDIGO CURTO (8 chars, grande).
+    // Sem UUID longo (fica só dentro do QR) e sem logo do evento (a logo é a FestPag,
+    // impressa no rodapé depois do QR via buildIngressoLogoHtml).
     private fun buildIngressoHtml(
         eventName: String,
-        lotName: String,
-        ticketCode: String,
-        brandName: String,
-        logoDataUri: String?,
+        shortCode: String,
         date: String
     ): String {
         val safeEvent = escapeHtml(PrinterUtils.truncate(eventName, 40))
-        val safeLot = escapeHtml(PrinterUtils.truncate(lotName, 32))
-        val safeCode = escapeHtml(ticketCode)
-        val safeBrand = escapeHtml(PrinterUtils.truncate(brandName, 28))
+        val safeShort = escapeHtml(shortCode)
         val safeDate = escapeHtml(date)
 
-        val logoOrBrand = if (!logoDataUri.isNullOrBlank()) {
-            """<img src="$logoDataUri" style="max-width:300px; max-height:120px; width:70%;" />"""
-        } else {
-            """<span style="font-weight:bold; font-size:18px;">$safeBrand</span>"""
-        }
-
-        val lotLine = if (safeLot.isNotBlank()) {
-            """<div style="font-size:18px; margin:2px 0 6px 0;">$safeLot</div>"""
-        } else {
-            ""
-        }
-
-        val codeBlock = if (safeCode.isNotBlank()) {
-            """
-            <hr style="border:none; border-top:1px dashed #000; margin:8px 0;">
-            <div style="font-size:12px;">CODIGO DO INGRESSO</div>
-            <div style="font-family:monospace; font-size:15px; font-weight:bold; word-break:break-all; margin:2px 0 6px 0;">$safeCode</div>
-            """
+        val dateLine = if (safeDate.isNotBlank() && safeDate != "-") {
+            """<div style="font-size:11px; margin-top:4px;">$safeDate</div>"""
         } else {
             ""
         }
@@ -528,30 +516,49 @@ class PrinterManager(
         return """
             <html>
             <body style="font-family: monospace; margin:0; padding:0; text-align:center;">
-                <div style="border:2px solid #000; padding:8px; margin:0;">
-
-                    <div style="background:#000; color:#fff; font-weight:bold; font-size:20px; padding:6px 0; margin-bottom:8px;">
-                        INGRESSO
-                    </div>
-
-                    <div style="font-size:22px; font-weight:bold; margin:4px 0;">
-                        $safeEvent
-                    </div>
-
-                    $lotLine
-
-                    <div style="margin:6px 0;">
-                        $logoOrBrand
-                    </div>
-
-                    $codeBlock
-
-                    <div style="font-size:12px; margin-top:6px;">Apresente o QR abaixo na entrada</div>
-                    <div style="font-size:11px; margin-top:4px;">$safeDate</div>
+                <div style="font-size:26px; font-weight:bold; line-height:1.1; margin:6px 0 4px 0;">
+                    $safeEvent
                 </div>
+
+                <hr style="border:none; border-top:1px dashed #000; margin:8px 0;">
+
+                <div style="font-size:13px; letter-spacing:1px;">CODIGO DE ENTRADA</div>
+                <div style="font-size:46px; font-weight:bold; letter-spacing:4px; margin:2px 0 6px 0;">
+                    $safeShort
+                </div>
+
+                <div style="font-size:12px; margin-top:6px;">Apresente o QR na entrada</div>
+                $dateLine
             </body>
             </html>
         """.trimIndent()
+    }
+
+    // Logo FestPag (rodapé do ingresso). ~75% da largura → centralizada, sem colar nas bordas.
+    private fun buildIngressoLogoHtml(logoDataUri: String): String {
+        return """
+            <html>
+            <body style="margin:0; padding:0; text-align:center;">
+                <img src="$logoDataUri" style="width:75%; max-width:300px;" />
+            </body>
+            </html>
+        """.trimIndent()
+    }
+
+    // Decodifica um drawable embarcado e devolve data URI JPEG — mesmo caminho do
+    // loadLogoAsDataUri (que o html2bitmap já renderiza), mas a partir de res/drawable.
+    private fun loadDrawableAsDataUri(resId: Int): String? {
+        return try {
+            val bitmap = BitmapFactory.decodeResource(context.resources, resId) ?: return null
+            val out = java.io.ByteArrayOutputStream()
+            bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
+            val b64 = Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+            Log.d("PRINT_DEBUG", "Logo FestPag OK | ${bitmap.width}x${bitmap.height} | b64=${b64.length}")
+            "data:image/jpeg;base64,$b64"
+        } catch (e: Exception) {
+            Log.e("PRINT_DEBUG", "Falha ao carregar logo FestPag: ${e.message}")
+            null
+        }
     }
 
     private fun buildStyledVoucherHtml(
