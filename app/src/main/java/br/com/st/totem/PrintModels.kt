@@ -55,6 +55,10 @@ data class PrintPayload(
     val lot_name: String? = null,
     val ticket_code: String? = null,
     val qr_payload: String? = null,
+    // event_date: string JÁ FORMATADA no totem-web ("dd/mm/yyyy HH:mm") — imprimir
+    // VERBATIM (não reparsear). event_location: "venue - city". Ambos podem vir null.
+    val event_date: String? = null,
+    val event_location: String? = null,
     val ingressos: List<IngressoTicket> = emptyList()
 )
 
@@ -63,7 +67,9 @@ data class IngressoTicket(
     val event_name: String? = null,
     val lot_name: String? = null,
     val ticket_code: String? = null,
-    val qr_payload: String? = null
+    val qr_payload: String? = null,
+    val event_date: String? = null,
+    val event_location: String? = null
 )
 
 data class PrintItem(

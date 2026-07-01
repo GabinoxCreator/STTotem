@@ -103,6 +103,9 @@ class PrintQueueRepository {
                                 lot_name = payloadJson?.optString("lot_name").nullIfBlank(),
                                 ticket_code = payloadJson?.optString("ticket_code").nullIfBlank(),
                                 qr_payload = payloadJson?.optRawString("qr_payload"),
+                                // Campos novos do totem-web: data já formatada + local. Podem faltar.
+                                event_date = payloadJson?.optString("event_date").nullIfBlank(),
+                                event_location = payloadJson?.optString("event_location").nullIfBlank(),
                                 ingressos = parseIngressos(payloadJson)
                             )
 
@@ -308,7 +311,9 @@ class PrintQueueRepository {
                     event_name = o.optString("event_name").nullIfBlank(),
                     lot_name = o.optString("lot_name").nullIfBlank(),
                     ticket_code = o.optString("ticket_code").nullIfBlank(),
-                    qr_payload = o.optRawString("qr_payload")
+                    qr_payload = o.optRawString("qr_payload"),
+                    event_date = o.optString("event_date").nullIfBlank(),
+                    event_location = o.optString("event_location").nullIfBlank()
                 )
             )
         }

@@ -1,16 +1,21 @@
 package br.com.st.totem
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Color
 import android.util.Base64
 import android.util.Log
-import br.com.gertec.easylayer.printer.BarcodeFormat
-import br.com.gertec.easylayer.printer.BarcodeType
+import br.com.gertec.easylayer.printer.Alignment
 import br.com.gertec.easylayer.printer.CutType
+import br.com.gertec.easylayer.printer.PrintConfig
 import br.com.gertec.easylayer.printer.Printer
 import br.com.gertec.easylayer.printer.PrinterError
 import br.com.gertec.easylayer.printer.PrinterErrorCode
 import br.com.gertec.easylayer.utils.Status
+import br.com.gertec.easylayer.zxing.google.zxingcore.BarcodeFormat
+import br.com.gertec.easylayer.zxing.google.zxingcore.EncodeHintType
+import br.com.gertec.easylayer.zxing.google.zxingcore.qrcode.QRCodeWriter
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
@@ -39,6 +44,11 @@ class PrinterManager(
     private val summaryAfterCutDelayMs = 500L
 
     private val summaryAfterTicketsDelayMs = 400L
+
+    // QR do ingresso: gerado como BITMAP em px fixos e impresso como imagem centralizada,
+    // pra ocupar quase toda a largura do papel (~384px na SK210). Gerar o bitmap no MESMO
+    // px do PrintConfig garante escala 1:1 (sem reamostragem → módulos nítidos no térmico).
+    private val ingressoQrSizePx = 348
 
     fun initialize(
         onReady: () -> Unit,
@@ -403,9 +413,12 @@ class PrinterManager(
     }
 
     // ===== Ingresso de evento (Bloco 2) =====
-    // Para CADA ingresso: bloco de texto em HTML (evento, lote, código legível) +
-    // QR NATIVO do qr_payload CRU via EasyLayer (printBarcode QR_CODE), rasterizado
-    // em módulos inteiros (sem anti-aliasing) p/ leitura confiável no térmico.
+    // Para CADA ingresso, de cima pra baixo:
+    //   1) HTML: NOME DO EVENTO (grande) + DATA + LOCAL + código curto legível.
+    //   2) QR GRANDE — BITMAP em px fixos (ingressoQrSizePx) do qr_payload CRU, impresso
+    //      como imagem centralizada (printImage) → ocupa quase a largura do papel e fica
+    //      nítido (módulos inteiros, sem anti-aliasing). Conteúdo do QR NÃO muda.
+    //   3) HTML: instrução no rodapé + logo FestPag embarcada.
     private fun printIngresso(
         job: PrintJob,
         onSuccess: () -> Unit,
@@ -424,7 +437,9 @@ class PrinterManager(
                         event_name = payload?.event_name,
                         lot_name = payload?.lot_name,
                         ticket_code = payload?.ticket_code,
-                        qr_payload = payload?.qr_payload
+                        qr_payload = payload?.qr_payload,
+                        event_date = payload?.event_date,
+                        event_location = payload?.event_location
                     )
                 )
             }
@@ -437,7 +452,6 @@ class PrinterManager(
                 return
             }
 
-            val date = PrinterUtils.formatDate(normalizeNullable(payload?.created_at) ?: job.created_at)
             // Logo FestPag embarcada (res/drawable), decodificada uma vez. Sai NO RODAPÉ,
             // depois do QR — não usa mais a brand_logo_url do evento.
             val festpagLogoUri = loadDrawableAsDataUri(R.drawable.festpag_print_logo)
@@ -448,28 +462,34 @@ class PrinterManager(
                 val n = index + 1
                 waitUntilPrinterReady(printerInstance, "antes_ingresso_$n")
 
-                // 1) Texto: NOME DO EVENTO + CÓDIGO CURTO (8 chars). Sem o UUID longo.
+                // 1) Cabeçalho: NOME DO EVENTO + DATA + LOCAL + CÓDIGO CURTO (8 chars).
+                //    event_date vem JÁ formatada do totem-web → imprime verbatim (só sanitiza).
+                //    event_location = "venue - city". Ambos omitidos no layout se ausentes.
                 val shortCode = (ing.ticket_code ?: "").take(8).uppercase()
+                val eventDate = normalizeNullable(ing.event_date ?: payload?.event_date)
+                    ?.let { PrinterUtils.sanitizeText(it) }
+                val eventLocation = normalizeNullable(ing.event_location ?: payload?.event_location)
+                    ?.let { PrinterUtils.sanitizeText(it) }
                 val html = buildIngressoHtml(
                     eventName = cleanNullableText(ing.event_name ?: payload?.event_name, "Evento"),
-                    shortCode = shortCode,
-                    date = date
+                    eventDate = eventDate,
+                    eventLocation = eventLocation,
+                    shortCode = shortCode
                 )
                 printerInstance.printHtml(context, html)
                 waitUntilPrinterReady(printerInstance, "apos_html_ingresso_$n")
 
-                // 2) QR NATIVO GRANDE — qr_payload CRU (ticket_code inteiro), FULL_PAPER.
-                //    Conteúdo do QR inalterado; só o tamanho mudou (é o que a portaria valida).
+                // 2) QR GRANDE como BITMAP — qr_payload CRU (ticket_code inteiro).
+                //    Conteúdo inalterado (é o que a portaria valida); só o tamanho mudou.
                 val qrRaw = ing.qr_payload!! // já filtrado não-nulo/não-vazio
-                val format = BarcodeFormat(BarcodeType.QR_CODE, BarcodeFormat.Size.FULL_PAPER)
-                printerInstance.printBarcode(format, qrRaw)
+                val qrBitmap = renderQrBitmap(qrRaw, ingressoQrSizePx)
+                val qrConfig = PrintConfig(ingressoQrSizePx, ingressoQrSizePx, Alignment.CENTER)
+                printerInstance.printImage(qrConfig, qrBitmap)
                 waitUntilPrinterReady(printerInstance, "apos_qr_ingresso_$n")
 
-                // 3) Logo FestPag no rodapé (mesmo caminho de imagem: base64 no HTML).
-                if (festpagLogoUri != null) {
-                    printerInstance.printHtml(context, buildIngressoLogoHtml(festpagLogoUri))
-                    waitUntilPrinterReady(printerInstance, "apos_logo_ingresso_$n")
-                }
+                // 3) Rodapé: instrução + logo FestPag embarcada (base64 no HTML).
+                printerInstance.printHtml(context, buildIngressoFooterHtml(festpagLogoUri))
+                waitUntilPrinterReady(printerInstance, "apos_footer_ingresso_$n")
 
                 // 4) Avanço + corte (padrão das fichas) + estabilização
                 printerInstance.scrollPaper(voucherPreCutFeedLines)
@@ -495,20 +515,27 @@ class PrinterManager(
         }
     }
 
-    // Layout do ingresso: NOME DO EVENTO (topo, grande) + CÓDIGO CURTO (8 chars, grande).
-    // Sem UUID longo (fica só dentro do QR) e sem logo do evento (a logo é a FestPag,
-    // impressa no rodapé depois do QR via buildIngressoLogoHtml).
+    // Cabeçalho do ingresso (impresso ANTES do QR):
+    //   NOME DO EVENTO (topo, grande) → DATA → LOCAL → separador → CÓDIGO CURTO (8 chars).
+    // Data/local vêm do totem-web e são OMITIDOS se ausentes. O código curto ficou MENOR
+    // que antes (era 46px). Sem UUID longo (fica só dentro do QR) e sem logo aqui — a logo
+    // FestPag + instrução saem no rodapé (buildIngressoFooterHtml), depois do QR.
     private fun buildIngressoHtml(
         eventName: String,
-        shortCode: String,
-        date: String
+        eventDate: String?,
+        eventLocation: String?,
+        shortCode: String
     ): String {
         val safeEvent = escapeHtml(PrinterUtils.truncate(eventName, 40))
         val safeShort = escapeHtml(shortCode)
-        val safeDate = escapeHtml(date)
 
-        val dateLine = if (safeDate.isNotBlank() && safeDate != "-") {
-            """<div style="font-size:11px; margin-top:4px;">$safeDate</div>"""
+        val dateLine = if (!eventDate.isNullOrBlank()) {
+            """<div style="font-size:15px; margin-top:5px;">${escapeHtml(PrinterUtils.truncate(eventDate, 32))}</div>"""
+        } else {
+            ""
+        }
+        val locationLine = if (!eventLocation.isNullOrBlank()) {
+            """<div style="font-size:14px; margin-top:3px;">${escapeHtml(PrinterUtils.truncate(eventLocation, 40))}</div>"""
         } else {
             ""
         }
@@ -516,33 +543,61 @@ class PrinterManager(
         return """
             <html>
             <body style="font-family: monospace; margin:0; padding:0; text-align:center;">
-                <div style="font-size:26px; font-weight:bold; line-height:1.1; margin:6px 0 4px 0;">
+                <div style="font-size:28px; font-weight:bold; line-height:1.1; margin:6px 0 2px 0;">
                     $safeEvent
                 </div>
+                $dateLine
+                $locationLine
 
-                <hr style="border:none; border-top:1px dashed #000; margin:8px 0;">
+                <hr style="border:none; border-top:1px dashed #000; margin:10px 0;">
 
                 <div style="font-size:13px; letter-spacing:1px;">CODIGO DE ENTRADA</div>
-                <div style="font-size:46px; font-weight:bold; letter-spacing:4px; margin:2px 0 6px 0;">
+                <div style="font-size:32px; font-weight:bold; letter-spacing:3px; margin:2px 0 4px 0;">
                     $safeShort
                 </div>
-
-                <div style="font-size:12px; margin-top:6px;">Apresente o QR na entrada</div>
-                $dateLine
             </body>
             </html>
         """.trimIndent()
     }
 
-    // Logo FestPag (rodapé do ingresso). ~75% da largura → centralizada, sem colar nas bordas.
-    private fun buildIngressoLogoHtml(logoDataUri: String): String {
+    // Rodapé do ingresso (impresso DEPOIS do QR): instrução centralizada (menor) + logo
+    // FestPag embarcada. A logo mantém o mesmo estilo de antes (75% / max 300px, centralizada).
+    private fun buildIngressoFooterHtml(logoDataUri: String?): String {
+        val logoTag = if (!logoDataUri.isNullOrBlank()) {
+            """<img src="$logoDataUri" style="width:75%; max-width:300px;" />"""
+        } else {
+            ""
+        }
         return """
             <html>
-            <body style="margin:0; padding:0; text-align:center;">
-                <img src="$logoDataUri" style="width:75%; max-width:300px;" />
+            <body style="margin:0; padding:0; font-family: monospace; text-align:center;">
+                <div style="font-size:13px; margin:6px 0 10px 0;">Apresente o QR Code na entrada</div>
+                $logoTag
             </body>
             </html>
         """.trimIndent()
+    }
+
+    // Gera o QR do qr_payload CRU como Bitmap P&B em px fixos, via zxing embutido no
+    // EasyLayer. Cada módulo é rasterizado em pixels inteiros (BitMatrix → setPixels,
+    // sem anti-aliasing) e a quiet-zone padrão é preservada — leitura confiável no térmico.
+    private fun renderQrBitmap(content: String, sizePx: Int): Bitmap {
+        val hints = hashMapOf<EncodeHintType, Any>(
+            EncodeHintType.CHARACTER_SET to "UTF-8"
+        )
+        val matrix = QRCodeWriter().encode(content, BarcodeFormat.QR_CODE, sizePx, sizePx, hints)
+        val w = matrix.width
+        val h = matrix.height
+        val pixels = IntArray(w * h)
+        for (y in 0 until h) {
+            val offset = y * w
+            for (x in 0 until w) {
+                pixels[offset + x] = if (matrix.get(x, y)) Color.BLACK else Color.WHITE
+            }
+        }
+        val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
+        return bitmap
     }
 
     // Decodifica um drawable embarcado e devolve data URI JPEG — mesmo caminho do
