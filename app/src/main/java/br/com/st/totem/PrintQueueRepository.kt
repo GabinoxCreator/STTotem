@@ -98,6 +98,10 @@ class PrintQueueRepository {
                                 unit_price = payloadJson?.optNullableDouble("unit_price"),
                                 subtotal = payloadJson?.optNullableDouble("subtotal"),
 
+                                // Foodtruck: podem faltar (bar/ingresso) → null, ficha sai igual.
+                                addon_lines = payloadJson?.optStringList("addon_lines"),
+                                partner_footer = payloadJson?.optString("partner_footer").nullIfBlank(),
+
                                 // Ingresso (Bloco 2). qr_payload lido CRU (sem trim/normalize).
                                 event_name = payloadJson?.optString("event_name").nullIfBlank(),
                                 lot_name = payloadJson?.optString("lot_name").nullIfBlank(),
@@ -230,7 +234,10 @@ class PrintQueueRepository {
                             .ifBlank { utJson.optString("name") }
                             .nullIfBlank(),
                         unit_number = utJson.optNullableInt("unit_number"),
-                        total_units = utJson.optNullableInt("total_units")
+                        total_units = utJson.optNullableInt("total_units"),
+                        // Foodtruck: podem faltar (bar) → null.
+                        addon_lines = utJson.optStringList("addon_lines"),
+                        partner_footer = utJson.optString("partner_footer").nullIfBlank()
                     )
                 )
             }
@@ -318,6 +325,18 @@ class PrintQueueRepository {
             )
         }
         return out
+    }
+
+    // Lista opcional de strings (ex.: addon_lines). Ausente, vazia ou só com
+    // entradas em branco → null (mesmo espírito defensivo do nullIfBlank).
+    private fun JSONObject.optStringList(name: String): List<String>? {
+        val arr = optJSONArray(name) ?: return null
+        val out = mutableListOf<String>()
+        for (j in 0 until arr.length()) {
+            val v = arr.optString(j).nullIfBlank()
+            if (v != null) out.add(v)
+        }
+        return if (out.isEmpty()) null else out
     }
 
     private fun JSONObject.optNullableInt(name: String): Int? {

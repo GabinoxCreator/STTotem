@@ -48,6 +48,12 @@ data class PrintPayload(
     val unit_price: Double? = null,
     val subtotal: Double? = null,
 
+    // Foodtruck: linhas de adicional ("+ 2x Bacon") e rodapé por parceiro
+    // ("Válido somente para <food truck>"). Ausentes em bar/ingresso → null
+    // (ficha atual sai idêntica).
+    val addon_lines: List<String>? = null,
+    val partner_footer: String? = null,
+
     // Ingresso (Bloco 2): print_job tipo "ingresso".
     // Caso de 1 ingresso por job → campos no topo do payload.
     // Caso de vários ingressos no mesmo job → lista `ingressos`.
@@ -82,5 +88,8 @@ data class PrintItem(
 data class UnitTicket(
     val item_name: String? = null,
     val unit_number: Int? = null,
-    val total_units: Int? = null
+    val total_units: Int? = null,
+    // Foodtruck (podem faltar — bar/ingresso → null).
+    val addon_lines: List<String>? = null,
+    val partner_footer: String? = null
 )

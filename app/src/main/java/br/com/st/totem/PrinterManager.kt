@@ -255,7 +255,9 @@ class PrinterManager(
                     consumerDoc = consumerDoc,
                     brandName = brandName,
                     logoDataUri = logoDataUri,
-                    date = date
+                    date = date,
+                    addonLines = ticket.addon_lines ?: emptyList(),
+                    partnerFooter = ticket.partner_footer
                 )
 
                 Log.d(
@@ -390,7 +392,9 @@ class PrinterManager(
                 consumerDoc = consumerDoc,
                 brandName = brandName,
                 logoDataUri = logoDataUri,
-                date = date
+                date = date,
+                addonLines = payload?.addon_lines ?: emptyList(),
+                partnerFooter = payload?.partner_footer
             )
 
             Log.d("PRINT_DEBUG", "printStyledTicket() -> HTML size=${html.length} | hasLogo=${logoDataUri != null}")
@@ -625,7 +629,11 @@ class PrinterManager(
         consumerDoc: String,
         brandName: String,
         logoDataUri: String?,
-        date: String
+        date: String,
+        // Foodtruck (defaults preservam qualquer chamador não-atualizado e a
+        // ficha de bar/ingresso: vazio/null → NADA é emitido no HTML).
+        addonLines: List<String> = emptyList(),
+        partnerFooter: String? = null
     ): String {
         val safeTitle = escapeHtml(PrinterUtils.truncate(title, 24))
         val safeShortCode = escapeHtml(shortCode)
@@ -634,6 +642,23 @@ class PrinterManager(
         val safeUnitLabel = escapeHtml(unitLabel)
         val safeBrandName = escapeHtml(PrinterUtils.truncate(brandName, 28))
         val safeDate = escapeHtml(date)
+
+        // Linhas de adicional (foodtruck): trio sanitize→truncate→escape por linha
+        // (truncate já passa por sanitizeText). Lista vazia → string vazia →
+        // template byte a byte igual ao atual.
+        val addonLinesHtml = addonLines
+            .map { escapeHtml(PrinterUtils.truncate(it, 28)) }
+            .filter { it.isNotBlank() }
+            .joinToString("") { safeLine ->
+                """<div style="font-size:17px; font-weight:bold; margin:0 0 2px 0;">$safeLine</div>"""
+            }
+
+        // Rodapé por parceiro (foodtruck): null/blank → string vazia (bar intocado).
+        val partnerFooterHtml = partnerFooter
+            ?.let { PrinterUtils.truncate(it, 30) }
+            ?.takeIf { it.isNotBlank() }
+            ?.let { """<div style="font-size:13px; font-weight:bold; margin:4px 0 2px 0;">${escapeHtml(it)}</div>""" }
+            ?: ""
 
         // Logo se disponível, senão nome da marca como fallback
         val logoOrBrand = if (!logoDataUri.isNullOrBlank()) {
@@ -661,13 +686,13 @@ class PrinterManager(
 
                     <div style="font-size:28px; font-weight:bold; margin:6px 0 4px 0;">
                         $safeItemName
-                    </div>
+                    </div>$addonLinesHtml
 
                     <div style="font-size:20px; font-weight:bold; margin:4px 0 14px 0;">
                         $safeUnitLabel
                     </div>
 
-                    <hr style="border:none; border-top:1px dashed #000; margin:6px 0 10px 0;">
+                    <hr style="border:none; border-top:1px dashed #000; margin:6px 0 10px 0;">$partnerFooterHtml
 
                     <div style="margin:6px 0 6px 0; text-align:center;">
                         $logoOrBrand
