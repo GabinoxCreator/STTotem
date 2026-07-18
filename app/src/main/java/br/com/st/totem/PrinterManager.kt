@@ -188,6 +188,11 @@ class PrinterManager(
                     printIngresso(job, onSuccess, onError)
                 }
 
+                jobType == "bingo_card" -> {
+                    Log.d("PRINT_DEBUG", "Roteando para printBingoCard()")
+                    printBingoCard(job, onSuccess, onError)
+                }
+
                 hasTickets && shouldPrintCustomerReceipt -> {
                     Log.d("PRINT_DEBUG", "Roteando para printSummaryPlusTickets()")
                     printSummaryPlusTickets(job, onSuccess, onError)
@@ -416,6 +421,93 @@ class PrinterManager(
             Log.e("STTotem", "Falha ao imprimir ticket estilizado", e)
             onError("Falha ao imprimir ticket: ${e.message}")
         }
+    }
+
+    // ===== Cartela de Bingo (job type "bingo_card") =====
+    // RODADA N no topo, os 5 números GRANDES em disposição 2-1-2, rodapé pequeno
+    // PEDIDO/CARTELA. Sem QR. (REIMPRESSÃO) quando reprint=true.
+    private fun printBingoCard(
+        job: PrintJob,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) {
+        try {
+            val printerInstance = requirePrinterInitialized(onError) ?: return
+            val payload = job.payload
+
+            waitUntilPrinterReady(printerInstance, "antes_bingo")
+
+            val brandName = cleanNullableText(payload?.brand_name, "ST Totem")
+            val logoDataUri = normalizeNullable(payload?.brand_logo_url)?.let { loadLogoAsDataUri(it) }
+            val roundNumber = payload?.round_number ?: 0
+            val cardNumber = payload?.card_number ?: 0
+            val numbers = payload?.numbers ?: emptyList()
+            val shortCode = normalizeNullable(payload?.short_order_code)
+                ?: PrinterUtils.formatShortCode(normalizeNullable(payload?.order_id) ?: job.order_id)
+            val isReprint = payload?.reprint == true
+
+            val html = buildBingoCardHtml(brandName, logoDataUri, roundNumber, cardNumber, numbers, shortCode, isReprint)
+
+            Log.d("PRINT_DEBUG", "printBingoCard() -> rodada=$roundNumber cartela=$cardNumber nums=${numbers.size} reprint=$isReprint | HTML size=${html.length}")
+
+            printerInstance.printHtml(context, html)
+            waitUntilPrinterReady(printerInstance, "apos_print_bingo")
+
+            printerInstance.scrollPaper(3)
+            waitUntilPrinterReady(printerInstance, "apos_scroll_bingo")
+
+            printerInstance.cutPaper(CutType.PAPER_PARTIAL_CUT)
+            Thread.sleep(voucherAfterCutDelayMs)
+            waitUntilPrinterReady(printerInstance, "apos_cut_bingo")
+
+            onSuccess()
+        } catch (e: Exception) {
+            Log.e("STTotem", "Falha ao imprimir cartela de bingo", e)
+            onError("Falha ao imprimir cartela: ${e.message}")
+        }
+    }
+
+    private fun buildBingoCardHtml(
+        brandName: String,
+        logoDataUri: String?,
+        roundNumber: Int,
+        cardNumber: Int,
+        numbers: List<Int>,
+        shortCode: String,
+        reprint: Boolean
+    ): String {
+        val safeBrand = escapeHtml(PrinterUtils.truncate(brandName, 28))
+        val safeShort = escapeHtml(shortCode)
+        // 5 números em 2-1-2. Faltando algo → célula em branco (defensivo).
+        fun cell(i: Int): String {
+            val n = numbers.getOrNull(i)
+            val txt = if (n != null) escapeHtml(n.toString()) else "&nbsp;"
+            return """<span style="display:inline-block; min-width:70px; margin:4px 8px; font-size:46px; font-weight:bold; border:3px solid #000; border-radius:12px; padding:6px 10px;">$txt</span>"""
+        }
+        val reprintHtml = if (reprint)
+            """<div style="font-size:14px; font-weight:bold; margin-top:6px;">(REIMPRESSÃO)</div>""" else ""
+        val logoOrBrand = if (!logoDataUri.isNullOrBlank())
+            """<img src="$logoDataUri" style="max-width:280px; max-height:110px; width:70%;" />"""
+        else """<span style="font-weight:bold; font-size:18px;">$safeBrand</span>"""
+
+        return """
+            <html>
+            <body style="font-family: monospace; margin:0; padding:0; text-align:center;">
+                <div style="border:3px solid #000; padding:10px; margin:0;">
+                    <div style="background:#000; color:#fff; font-weight:bold; font-size:26px; padding:8px 0; margin-bottom:10px;">
+                        BINGO · RODADA $roundNumber
+                    </div>
+                    <div style="margin:8px 0 4px 0;">${cell(0)}${cell(1)}</div>
+                    <div style="margin:4px 0;">${cell(2)}</div>
+                    <div style="margin:4px 0 10px 0;">${cell(3)}${cell(4)}</div>
+                    <hr style="border:none; border-top:1px dashed #000; margin:8px 0;">
+                    <div style="margin:6px 0;">$logoOrBrand</div>
+                    <div style="font-size:13px; margin-top:6px;">PEDIDO $safeShort &middot; CARTELA $cardNumber</div>
+                    $reprintHtml
+                </div>
+            </body>
+            </html>
+        """.trimIndent()
     }
 
     // ===== Ingresso de evento (Bloco 2) =====

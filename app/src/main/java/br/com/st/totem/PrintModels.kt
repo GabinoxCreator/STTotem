@@ -57,6 +57,13 @@ data class PrintPayload(
     val addon_lines: List<String>? = null,
     val partner_footer: String? = null,
 
+    // Bingo (job type "bingo_card"): 5 números da cartela + rodada + nº da cartela.
+    // Ausentes em qualquer outro job → cartela nunca é impressa por engano.
+    val round_number: Int? = null,
+    val card_number: Int? = null,
+    val numbers: List<Int>? = null,
+    val reprint: Boolean? = null,
+
     // Ingresso (Bloco 2): print_job tipo "ingresso".
     // Caso de 1 ingresso por job → campos no topo do payload.
     // Caso de vários ingressos no mesmo job → lista `ingressos`.
