@@ -257,7 +257,8 @@ class PrinterManager(
                     logoDataUri = logoDataUri,
                     date = date,
                     addonLines = ticket.addon_lines ?: emptyList(),
-                    partnerFooter = ticket.partner_footer
+                    partnerFooter = ticket.partner_footer,
+                    pickupCode = cleanNullableText(payload?.pickup_code, "")
                 )
 
                 Log.d(
@@ -394,7 +395,8 @@ class PrinterManager(
                 logoDataUri = logoDataUri,
                 date = date,
                 addonLines = payload?.addon_lines ?: emptyList(),
-                partnerFooter = payload?.partner_footer
+                partnerFooter = payload?.partner_footer,
+                pickupCode = cleanNullableText(payload?.pickup_code, "")
             )
 
             Log.d("PRINT_DEBUG", "printStyledTicket() -> HTML size=${html.length} | hasLogo=${logoDataUri != null}")
@@ -633,7 +635,11 @@ class PrinterManager(
         // Foodtruck (defaults preservam qualquer chamador não-atualizado e a
         // ficha de bar/ingresso: vazio/null → NADA é emitido no HTML).
         addonLines: List<String> = emptyList(),
-        partnerFooter: String? = null
+        partnerFooter: String? = null,
+        // SENHA sequencial (pickup_code). Presente → bloco grande no lugar do
+        // partnerFooter (redundante no restaurante dedicado). Null/blank → ficha
+        // byte a byte idêntica à atual, com partnerFooter.
+        pickupCode: String? = null
     ): String {
         val safeTitle = escapeHtml(PrinterUtils.truncate(title, 24))
         val safeShortCode = escapeHtml(shortCode)
@@ -653,8 +659,17 @@ class PrinterManager(
                 """<div style="font-size:17px; font-weight:bold; margin:0 0 2px 0;">$safeLine</div>"""
             }
 
+        // SENHA em destaque (40px — supera o item_name de 28px): rótulo + número.
+        val pickupHtml = pickupCode
+            ?.let { PrinterUtils.truncate(it, 8) }
+            ?.takeIf { it.isNotBlank() }
+            ?.let {
+                """<div style="margin:6px 0 4px 0;"><div style="font-size:16px; font-weight:bold; letter-spacing:3px;">SENHA</div><div style="font-size:40px; font-weight:bold; line-height:1.05;">${escapeHtml(it)}</div></div>"""
+            } ?: ""
+
         // Rodapé por parceiro (foodtruck): null/blank → string vazia (bar intocado).
-        val partnerFooterHtml = partnerFooter
+        // Suprimido quando há SENHA — no restaurante dedicado o rodapé é redundante.
+        val partnerFooterHtml = if (pickupHtml.isNotEmpty()) "" else partnerFooter
             ?.let { PrinterUtils.truncate(it, 30) }
             ?.takeIf { it.isNotBlank() }
             ?.let { """<div style="font-size:13px; font-weight:bold; margin:4px 0 2px 0;">${escapeHtml(it)}</div>""" }
@@ -692,7 +707,7 @@ class PrinterManager(
                         $safeUnitLabel
                     </div>
 
-                    <hr style="border:none; border-top:1px dashed #000; margin:6px 0 10px 0;">$partnerFooterHtml
+                    <hr style="border:none; border-top:1px dashed #000; margin:6px 0 10px 0;">$pickupHtml$partnerFooterHtml
 
                     <div style="margin:6px 0 6px 0; text-align:center;">
                         $logoOrBrand
@@ -784,6 +799,12 @@ class PrinterManager(
         htmlBuilder.append("<hr style=\"border: none; border-top: 1px dashed #000; margin: 10px 0;\">")
 
         htmlBuilder.append("<p style=\"margin: 5px 0;\">Pedido: ${escapeHtml(shortCode)}</p>")
+        // SENHA (pickup_code): destaque junto do "Pedido:" — o hex continua sendo a
+        // referência de suporte/admin. Ausente → linha não sai (recibo atual intacto).
+        val pickupCode = cleanNullableText(payload?.pickup_code, "")
+        if (pickupCode.isNotBlank()) {
+            htmlBuilder.append("<p style=\"margin: 5px 0; font-weight: bold; font-size: 1.4em;\">Senha: ${escapeHtml(pickupCode)}</p>")
+        }
         htmlBuilder.append("<p style=\"margin: 5px 0;\">Data: ${escapeHtml(date)}</p>")
         if (locationName.isNotBlank()) {
             htmlBuilder.append("<p style=\"margin: 5px 0;\">Local: ${escapeHtml(locationName)}</p>")

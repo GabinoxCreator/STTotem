@@ -25,6 +25,9 @@ data class PrintPayload(
     val receipt_footer: String? = null,
     val pickup_message: String? = null,
     val short_order_code: String? = null,
+    // SENHA sequencial por empresa (orders.pickup_code). Null/ausente (empresa sem
+    // flag, backend antigo) → ficha e recibo saem exatamente como hoje.
+    val pickup_code: String? = null,
     val location_name: String? = null,
     val order_id: String? = null,
     val created_at: String? = null,
