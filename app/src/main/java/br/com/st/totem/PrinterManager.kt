@@ -482,7 +482,8 @@ class PrinterManager(
         fun cell(i: Int): String {
             val n = numbers.getOrNull(i)
             val txt = if (n != null) escapeHtml(n.toString()) else "&nbsp;"
-            return """<span style="display:inline-block; min-width:70px; margin:4px 8px; font-size:46px; font-weight:bold; border:3px solid #000; border-radius:12px; padding:6px 10px;">$txt</span>"""
+            // margin horizontal generosa (18px) p/ separar bem os pares 2-_-2.
+            return """<span style="display:inline-block; min-width:70px; margin:5px 18px; font-size:46px; font-weight:bold; border:3px solid #000; border-radius:12px; padding:6px 10px;">$txt</span>"""
         }
         val reprintHtml = if (reprint)
             """<div style="font-size:14px; font-weight:bold; margin-top:6px;">(REIMPRESSÃO)</div>""" else ""
@@ -495,7 +496,7 @@ class PrinterManager(
             <body style="font-family: monospace; margin:0; padding:0; text-align:center;">
                 <div style="border:3px solid #000; padding:10px; margin:0;">
                     <div style="background:#000; color:#fff; font-weight:bold; font-size:26px; padding:8px 0; margin-bottom:10px;">
-                        BINGO · RODADA $roundNumber
+                        RODADA $roundNumber
                     </div>
                     <div style="margin:8px 0 4px 0;">${cell(0)}${cell(1)}</div>
                     <div style="margin:4px 0;">${cell(2)}</div>

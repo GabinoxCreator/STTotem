@@ -110,7 +110,13 @@ class PrintQueueRepository {
                                 // Campos novos do totem-web: data já formatada + local. Podem faltar.
                                 event_date = payloadJson?.optString("event_date").nullIfBlank(),
                                 event_location = payloadJson?.optString("event_location").nullIfBlank(),
-                                ingressos = parseIngressos(payloadJson)
+                                ingressos = parseIngressos(payloadJson),
+
+                                // Bingo (job type "bingo_card"): rodada, nº da cartela e as 5
+                                // dezenas. Sem estes o printBingoCard caía em 0/0/vazio.
+                                round_number = payloadJson?.optNullableInt("round_number"),
+                                card_number = payloadJson?.optNullableInt("card_number"),
+                                numbers = payloadJson?.optIntList("numbers")
                             )
 
                             val job = PrintJob(
@@ -335,6 +341,17 @@ class PrintQueueRepository {
         for (j in 0 until arr.length()) {
             val v = arr.optString(j).nullIfBlank()
             if (v != null) out.add(v)
+        }
+        return if (out.isEmpty()) null else out
+    }
+
+    // Lista de inteiros (as 5 dezenas da cartela de bingo). Ausente/vazio → null.
+    private fun JSONObject.optIntList(name: String): List<Int>? {
+        val arr = optJSONArray(name) ?: return null
+        val out = mutableListOf<Int>()
+        for (j in 0 until arr.length()) {
+            if (arr.isNull(j)) continue
+            out.add(arr.optInt(j))
         }
         return if (out.isEmpty()) null else out
     }
