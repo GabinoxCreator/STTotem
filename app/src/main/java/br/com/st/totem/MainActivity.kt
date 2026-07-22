@@ -76,6 +76,21 @@ class MainActivity : AppCompatActivity() {
 
     private var appVersionName: String = "1.0.0"
     private var bootstrapLoaded = false
+
+    // Retry de bootstrap por falha transitória (rede/timeout/401/5xx/parse/offline).
+    // Falha de bootstrap NUNCA limpa ativação nem vai pra ActivationActivity: o token
+    // fica intacto e o app se recupera sozinho. Backoff exponencial 2s→30s, INDEFINIDO,
+    // UM retry em voo (guard). Roda no `handler` (main looper), cancelado no onDestroy /
+    // no sucesso / no retry manual.
+    private var bootstrapRetryScheduled = false
+    private var bootstrapRetryDelayMs = 2_000L
+    private val bootstrapRetryBaseMs = 2_000L
+    private val bootstrapRetryMaxMs = 30_000L
+    private val bootstrapRetryRunnable = Runnable {
+        bootstrapRetryScheduled = false
+        bootstrapWithToken()
+    }
+
     private var isPrintingNow = false
     private var kioskModeEnabled = true
     private var kioskModeStartedOnce = false
@@ -441,6 +456,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         stopHeartbeatLoop(); stopPrintQueueLoop(); cancelPrintTimeout()
+        resetBootstrapRetry() // cancela retry de bootstrap pendente
         printExecutor.shutdownNow()
         pendingCameraPermissionRequest = null
         pinPadStateMonitor.stop()
@@ -467,7 +483,15 @@ class MainActivity : AppCompatActivity() {
     private fun bootstrapWithToken() {
         val token = storage.getActivationToken()
         if (token.isNullOrBlank()) { goToActivation(); return }
-        if (!isOnline()) { showError("Sem conexão", "Conecte o dispositivo à internet."); return }
+        if (!isOnline()) {
+            // Sabidamente offline não é erro terminal: mesmo estado "reconectando"
+            // + retry com backoff. Recupera sozinho quando a rede voltar. Token intacto.
+            bootstrapLoaded = false
+            stopHeartbeatLoop(); stopPrintQueueLoop()
+            showError("Sem conexão", "Reconectando…")
+            scheduleBootstrapRetry()
+            return
+        }
         showLoadingState()
         bootstrapRepository.bootstrap(
             activationToken = token,
@@ -480,6 +504,7 @@ class MainActivity : AppCompatActivity() {
                     storage.saveSitefOtp(result.sitefOtp)
                     storage.saveSitefTerminalId(result.sitefTerminalId)
                     bootstrapLoaded = true
+                    resetBootstrapRetry() // sucesso: cancela retry pendente + zera backoff
                     sendEvent("app_opened", JSONObject().put("mode", "token_bootstrap"))
                     startHeartbeatLoop(); startPrintQueueLoop()
                     loadKioskWithToken(token)
@@ -487,14 +512,35 @@ class MainActivity : AppCompatActivity() {
             },
             onError = { message ->
                 runOnUiThread {
+                    // Falha transitória (rede/timeout/401/5xx/parse): NUNCA limpa ativação
+                    // nem vai pra ActivationActivity. Token preservado; mostra "reconectando"
+                    // e reagenda com backoff até o bootstrap voltar. Os loops religam no sucesso.
+                    Log.w("STTotem", "Bootstrap falhou (transitório, token preservado): $message")
                     bootstrapLoaded = false
                     stopHeartbeatLoop(); stopPrintQueueLoop()
-                    storage.clearActivation()
-                    showError("Ativação inválida", if (message.isBlank()) "Ative o totem novamente." else message)
-                    handler.postDelayed({ goToActivation() }, 1200L)
+                    showError("Sem conexão", "Reconectando…")
+                    scheduleBootstrapRetry()
                 }
             }
         )
+    }
+
+    // Agenda UMA tentativa de bootstrap (guard: nunca empilha loops em falhas seguidas).
+    // Backoff exponencial 2s→4s→8s→… com teto de 30s, indefinido. NÃO zera o delay —
+    // quem zera é o sucesso / o retry manual (resetBootstrapRetry).
+    private fun scheduleBootstrapRetry() {
+        if (bootstrapRetryScheduled) return
+        bootstrapRetryScheduled = true
+        handler.postDelayed(bootstrapRetryRunnable, bootstrapRetryDelayMs)
+        Log.w("STTotem", "Bootstrap retry em ${bootstrapRetryDelayMs}ms (token preservado)")
+        bootstrapRetryDelayMs = (bootstrapRetryDelayMs * 2).coerceAtMost(bootstrapRetryMaxMs)
+    }
+
+    // Cancela retry pendente e zera o backoff. Chamado no sucesso, no retry manual e no onDestroy.
+    private fun resetBootstrapRetry() {
+        handler.removeCallbacks(bootstrapRetryRunnable)
+        bootstrapRetryScheduled = false
+        bootstrapRetryDelayMs = bootstrapRetryBaseMs
     }
 
     private fun pollPrintQueue() {
@@ -565,7 +611,7 @@ class MainActivity : AppCompatActivity() {
     private fun stopPrintQueueLoop() { printQueueHandler.removeCallbacks(printQueueRunnable) }
     private fun cancelPrintTimeout() { currentPrintTimeoutRunnable?.let { printTimeoutHandler.removeCallbacks(it) }; currentPrintTimeoutRunnable = null }
     private fun keepScreenAwake() { window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
-    private fun setupRetry() { binding.retryButton.setOnClickListener { if (!storage.isActivated()) goToActivation() else bootstrapWithToken() } }
+    private fun setupRetry() { binding.retryButton.setOnClickListener { if (!storage.isActivated()) goToActivation() else { resetBootstrapRetry(); bootstrapWithToken() } } }
     private fun setupBackPress() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() { if (binding.webView.canGoBack()) binding.webView.goBack() }
