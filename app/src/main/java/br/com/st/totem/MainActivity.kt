@@ -42,6 +42,7 @@ import br.com.st.totem.databinding.ActivityMainBinding
 import br.com.st.totem.payment.sitef.PaymentProvider
 import br.com.st.totem.payment.sitef.PaymentState
 import br.com.st.totem.payment.sitef.PinPadStateMonitor
+import br.com.st.totem.payment.sitef.SitefBandeiraNome
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
@@ -159,7 +160,19 @@ class MainActivity : AppCompatActivity() {
                 payload.put("success", success)
                 payload.put("codResp", codResp ?: "")
                 payload.put("codTrans", extras?.getString("CODTRANS") ?: "")
-                payload.put("bandeira", extras?.getString("BANDEIRA") ?: "")
+                // m-SiTef: o extra BANDEIRA é o CÓDIGO (5 posições); o nome, quando
+                // dá, sai do comprovante. O servidor traduz o código.
+                val bandeiraBruta = extras?.getString("BANDEIRA")
+                payload.put(
+                    "bandeira",
+                    SitefBandeiraNome.resolver(
+                        bandeiraBruta,
+                        extras?.getString("VIA_CLIENTE"),
+                        extras?.getString("VIA_ESTABELECIMENTO")
+                    ) ?: (bandeiraBruta ?: "")
+                )
+                payload.put("bandeiraCodigo", bandeiraBruta?.takeIf { SitefBandeiraNome.ehCodigo(it) } ?: "")
+                payload.put("rede", extras?.getString("REDE_AUT") ?: "")
                 payload.put("nsuSitef", extras?.getString("NSU_SITEF") ?: "")
                 payload.put("nsuHost", extras?.getString("NSU_HOST") ?: "")
                 payload.put("codAutorizacao", extras?.getString("COD_AUTORIZACAO") ?: "")
@@ -298,6 +311,8 @@ class MainActivity : AppCompatActivity() {
                     put("codResp", result.codResp ?: "")
                     put("codTrans", result.codTrans ?: "")
                     put("bandeira", result.bandeira ?: "")
+                    put("bandeiraCodigo", result.bandeiraCodigo ?: "")
+                    put("rede", result.rede ?: "")
                     put("nsuSitef", result.nsuSitef ?: "")
                     put("nsuHost", result.nsuHost ?: "")
                     put("codAutorizacao", result.codAutorizacao ?: "")

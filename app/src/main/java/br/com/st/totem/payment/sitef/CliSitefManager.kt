@@ -412,18 +412,39 @@ class CliSitefManager(
         }
     }
 
+    /**
+     * Campos de resultado (Comando 0) conforme a espec. oficial da Software
+     * Express "SiTef – Interface Simplificada com a aplicação" (VRS-248, §TipoCampo):
+     *
+     *   131  índice da INSTITUIÇÃO que processa (rede) — "00302" em todo cartão, "00271" no PIX
+     *   132  tipo do cartão = CÓDIGO DA BANDEIRA (5 posições, tabela "Bandeira Padrão SiTef":
+     *        20001 = Master Débito, 00001 = Visa Crédito, 20032 = Elo Débito…)
+     *   133  NSU do SiTef (6 posições)
+     *   134  NSU do Host autorizador (até 20)
+     *   135  Código de autorização (até 15)
+     *   156  nome da instituição · 158 código da rede autorizadora
+     *
+     * ⚠️ HISTÓRICO (corrigido em 08/09/2026): até o APK 1.27 este mapa estava
+     * DESLOCADO em uma posição (131→bandeira, 132→nsuSitef, 133→nsuHost,
+     * 134→codAutorizacao), seguindo um guia de integração errado. Resultado no
+     * banco: "bandeira" = 00302 em 100% dos cartões, "NSU" = código da bandeira
+     * (repetia), "autorização" = NSU do host. O servidor (`totem-create-order`)
+     * reconhece o formato antigo, então APK velho e novo convivem.
+     */
     private fun collectResponseField(effectiveFieldId: Int, buffer: String?) {
         if (buffer.isNullOrEmpty()) return
         when (effectiveFieldId) {
-            100  -> resultFields["codTrans"]       = buffer
-            121  -> receiptCustomer                = buffer
-            122  -> receiptEstablishment           = buffer
-            131  -> resultFields["bandeira"]       = buffer
-            132  -> resultFields["nsuSitef"]       = buffer
-            133  -> resultFields["nsuHost"]        = buffer
-            134  -> resultFields["codAutorizacao"] = buffer
-            135  -> resultFields["tipoCartao"]     = buffer
-            2    -> resultFields["confirmacao"]    = buffer
+            100  -> resultFields["codTrans"]         = buffer
+            121  -> receiptCustomer                  = buffer
+            122  -> receiptEstablishment             = buffer
+            131  -> resultFields["rede"]             = buffer
+            132  -> resultFields["bandeiraCodigo"]   = buffer
+            133  -> resultFields["nsuSitef"]         = buffer
+            134  -> resultFields["nsuHost"]          = buffer
+            135  -> resultFields["codAutorizacao"]   = buffer
+            156  -> resultFields["instituicao"]      = buffer
+            158  -> resultFields["redeAutorizadora"] = buffer
+            2    -> resultFields["confirmacao"]      = buffer
         }
     }
 
@@ -467,7 +488,11 @@ class CliSitefManager(
             success            = aprovado,
             codResp            = resultCode.toString(),
             codTrans           = resultFields["codTrans"],
-            bandeira           = resultFields["bandeira"],
+            // Nome quando o comprovante diz; senão o código cru (o servidor traduz).
+            bandeira           = SitefBandeiraNome.resolver(null, receiptCustomer, receiptEstablishment)
+                ?: resultFields["bandeiraCodigo"],
+            bandeiraCodigo     = resultFields["bandeiraCodigo"],
+            rede               = resultFields["rede"],
             nsuSitef           = resultFields["nsuSitef"],
             nsuHost            = resultFields["nsuHost"],
             codAutorizacao     = resultFields["codAutorizacao"],
