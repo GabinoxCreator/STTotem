@@ -5,6 +5,14 @@
     android:layout_height="match_parent"
     android:keepScreenOn="true">
 
+    <!-- Superfície do leitor de código (DecodeLibrary da Gertec). A biblioteca
+         é de Camera1/Camera2 e exige uma preview existindo, mesmo que ninguém
+         veja: 1dp, atrás da WebView. Não remova achando que é sobra. -->
+    <FrameLayout
+        android:id="@+id/scannerHolder"
+        android:layout_width="1dp"
+        android:layout_height="1dp" />
+
     <WebView
         android:id="@+id/webView"
         android:layout_width="match_parent"

@@ -102,6 +102,18 @@ class MainActivity : AppCompatActivity() {
     private var pendingFacePagReferenceId: String? = null
     private var pendingFacePagAmountCents: Int? = null
     private var pendingCameraPermissionRequest: PermissionRequest? = null
+
+    /** Leitor de código embaixo da tela (SK-210). Criado só quando a portaria
+     *  pede: até 10/09/2026 este módulo nunca era ligado por nós. */
+    private val qrScanner by lazy {
+        QrScannerManager(
+            activity = this,
+            holder = binding.scannerHolder,
+            storage = storage,
+            onCodigo = { codigo -> dispatchQrToWeb(codigo) },
+            onLog = { event, detail, severity -> sendLog("scanner", event, detail, severity) },
+        )
+    }
     private var appCameraPermissionReady = false
 
     private val printBaseTimeoutMs = 45_000L
@@ -466,6 +478,9 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         stopHeartbeatLoop(); stopPrintQueueLoop(); cancelPrintTimeout()
+        // Leitor aceso com o app atrás é lâmpada queimando e câmera presa: a
+        // facial não abriria depois.
+        try { qrScanner.desligar() } catch (_: Exception) {}
     }
 
     override fun onDestroy() {
@@ -473,6 +488,7 @@ class MainActivity : AppCompatActivity() {
         stopHeartbeatLoop(); stopPrintQueueLoop(); cancelPrintTimeout()
         resetBootstrapRetry() // cancela retry de bootstrap pendente
         printExecutor.shutdownNow()
+        try { qrScanner.desligar() } catch (_: Exception) {}
         pendingCameraPermissionRequest = null
         pinPadStateMonitor.stop()
         try { unregisterReceiver(usbReceiver) } catch (_: Exception) {}
@@ -727,6 +743,14 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread { binding.webView.evaluateJavascript(script, null) }
     }
 
+    /** Código lido pelo leitor → página. Mesmo padrão dos outros eventos:
+     *  CustomEvent com payload escapado, nunca chamada direta de função da página. */
+    private fun dispatchQrToWeb(codigo: String) {
+        val escapado = JSONObject.quote(codigo)
+        val script = "(function(){try{window.dispatchEvent(new CustomEvent('android-qr-lido',{detail:{code:JSON.parse($escapado)}}));}catch(e){}})();"
+        runOnUiThread { binding.webView.evaluateJavascript(script, null) }
+    }
+
     private fun notifyWebCameraError(reason: String) {
         val escapedReason = JSONObject.quote(reason)
         val script = "(function(){try{window.dispatchEvent(new CustomEvent('android-camera-error',{detail:{reason:JSON.parse($escapedReason)}}));}catch(e){}})();"
@@ -865,6 +889,21 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun isFacePagAvailable(): Boolean = false
+
+        /** A tela de check-in pergunta antes de decidir como vai ler o QR:
+         *  com leitor, ela nem abre a câmera de cima. */
+        @JavascriptInterface
+        fun isQrScannerAvailable(): Boolean = true
+
+        @JavascriptInterface
+        fun startQrScan() {
+            runOnUiThread { try { qrScanner.ligar() } catch (e: Exception) { Log.e("SCANNER", "ligar: ${e.message}") } }
+        }
+
+        @JavascriptInterface
+        fun stopQrScan() {
+            runOnUiThread { try { qrScanner.desligar() } catch (e: Exception) { Log.e("SCANNER", "desligar: ${e.message}") } }
+        }
 
         @JavascriptInterface
         fun startFacePagLiveness(referenceId: String, amountCents: Int, livenessSessionId: String, region: String, identityPoolId: String): Boolean {

@@ -54,6 +54,13 @@ class LocalStorageManager(context: Context) {
         return prefs.getString("sitef_otp", null)
     }
 
+    /** Qual "tipo de câmera" da DecodeLibrary é o leitor de código DESTE aparelho.
+     *  Descoberto pelo QrScannerManager na primeira leitura e guardado para não
+     *  repetir a procura na frente de quem está na fila da portaria. */
+    fun saveScannerCameraType(value: String?) { prefs.edit().putString("scanner_camera_type", value).apply() }
+
+    fun getScannerCameraType(): String? { return prefs.getString("scanner_camera_type", null) }
+
     fun saveSitefTerminalId(value: String?) { prefs.edit().putString("sitef_terminal_id", value).apply() }
 
     fun getSitefTerminalId(): String? { return prefs.getString("sitef_terminal_id", null) }
