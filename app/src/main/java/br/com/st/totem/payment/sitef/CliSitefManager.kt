@@ -54,7 +54,14 @@ class CliSitefManager(
 ) {
     companion object {
         private const val TAG             = "CLISITEF_MANAGER"
-        private const val EMPRESA_SITEF   = "THEO0167"
+        // ⚠️ Este é o código da LOJA no SiTef, não da "empresa" e não do terminal.
+        // O extra "empresaSitef" do M-SiTef e o 2º parâmetro do configure() do
+        // CliSiTef são a LOJA (ver _docs/clisitef-marcel/clisitef_implementation_guide.md).
+        // O nome antigo da constante era EMPRESA_SITEF e confundiu quem leu.
+        // O terminal — o número do EQUIPAMENTO — é outra coisa: sitef_terminal_id.
+        // Este valor é o PADRÃO: vale para todo aparelho que não tiver loja
+        // própria no cadastro. Loja por aparelho vem de totems.sitef_loja.
+        private const val CODIGO_LOJA_PADRAO = "THEO0167"
         private const val ENDERECO_SITEF  = "66.22.76.37"
         private const val CNPJ_CPF        = "43941698000152"
         private const val CNPJ_AUTOMACAO  = "61126523000173"
@@ -162,10 +169,12 @@ class CliSitefManager(
                 "TerminalUUID=$CNPJ_CPF;]"
 
         val terminalId = storage.getSitefTerminalId()?.trim()?.takeIf { it.isNotBlank() } ?: CNPJ_AUTOMACAO
+        // A loja deste aparelho: a do cadastro quando houver, senão a de sempre.
+        val codigoLoja = storage.getSitefLoja()?.trim()?.takeIf { it.isNotBlank() } ?: CODIGO_LOJA_PADRAO
 
         Log.i(TAG, "╔══════════════════════════════════════════════")
         Log.i(TAG, "║ startPayment method=$paymentMethod modal=$modalidade")
-        Log.i(TAG, "║ valor=$valorStr (${amountCents}c) | terminalId=$terminalId")
+        Log.i(TAG, "║ valor=$valorStr (${amountCents}c) | loja=$codigoLoja | terminalId=$terminalId")
         Log.i(TAG, "║ params=$params")
         Log.i(TAG, "╚══════════════════════════════════════════════")
 
@@ -179,7 +188,7 @@ class CliSitefManager(
         executor.execute {
             try {
                 val configResult = cliSiTef.configure(
-                    ENDERECO_SITEF, EMPRESA_SITEF, terminalId, params
+                    ENDERECO_SITEF, codigoLoja, terminalId, params
                 )
 
                 if (configResult != 0) {

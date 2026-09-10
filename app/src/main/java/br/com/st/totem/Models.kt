@@ -32,5 +32,8 @@ data class BootstrapResponse(
     val locationId: String? = null,
     val sitefOtp: String? = null,
     val sitefTerminalId: String? = null,
+    // Codigo da LOJA no SiTef deste aparelho (nao e o terminal: terminal e o
+    // numero do equipamento, acima). NULO/vazio = usa a loja padrao do app.
+    val sitefLoja: String? = null,
     val errorMessage: String? = null
 )

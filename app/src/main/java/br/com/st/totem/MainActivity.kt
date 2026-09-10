@@ -534,6 +534,7 @@ class MainActivity : AppCompatActivity() {
                     storage.saveIdentifier(result.identifier)
                     storage.saveSitefOtp(result.sitefOtp)
                     storage.saveSitefTerminalId(result.sitefTerminalId)
+                    storage.saveSitefLoja(result.sitefLoja)
                     bootstrapLoaded = true
                     resetBootstrapRetry() // sucesso: cancela retry pendente + zera backoff
                     sendEvent("app_opened", JSONObject().put("mode", "token_bootstrap"))

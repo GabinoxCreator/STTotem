@@ -65,6 +65,13 @@ class LocalStorageManager(context: Context) {
 
     fun getSitefTerminalId(): String? { return prefs.getString("sitef_terminal_id", null) }
 
+    /** Codigo da LOJA no SiTef deste aparelho, vindo do cadastro do totem.
+     *  NULO/vazio = o app usa a loja padrao compilada (CODIGO_LOJA_PADRAO).
+     *  NAO confundir com o terminal, que e o numero do equipamento. */
+    fun saveSitefLoja(value: String?) { prefs.edit().putString("sitef_loja", value).apply() }
+
+    fun getSitefLoja(): String? { return prefs.getString("sitef_loja", null) }
+
     fun isActivated(): Boolean {
         return !getActivationToken().isNullOrBlank()
     }
@@ -78,6 +85,7 @@ class LocalStorageManager(context: Context) {
             .remove("identifier")
             .remove("sitef_otp")
             .remove("sitef_terminal_id")
+            .remove("sitef_loja")
             .apply()
     }
 }

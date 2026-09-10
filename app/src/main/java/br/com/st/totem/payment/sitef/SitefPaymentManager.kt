@@ -21,7 +21,14 @@ class SitefPaymentManager(
         private const val SITEF_PACKAGE = "br.com.softwareexpress.msitef.mobile.p6"
         private const val SITEF_ACTION = "br.com.softwareexpress.sitef.msitef.ACTIVITY_CLISITEF"
 
-        private const val EMPRESA_SITEF = "THEO0167"
+        // ⚠️ Este é o código da LOJA no SiTef, não da "empresa" e não do terminal.
+        // O extra "empresaSitef" do M-SiTef e o 2º parâmetro do configure() do
+        // CliSiTef são a LOJA (ver _docs/clisitef-marcel/clisitef_implementation_guide.md).
+        // O nome antigo da constante era EMPRESA_SITEF e confundiu quem leu.
+        // O terminal — o número do EQUIPAMENTO — é outra coisa: sitef_terminal_id.
+        // Este valor é o PADRÃO: vale para todo aparelho que não tiver loja
+        // própria no cadastro. Loja por aparelho vem de totems.sitef_loja.
+        private const val CODIGO_LOJA_PADRAO = "THEO0167"
         private const val ENDERECO_SITEF = "127.0.0.1:4096"
         private const val CNPJ_CPF = "43941698000152"
         private const val CNPJ_AUTOMACAO = "61126523000173"
@@ -38,6 +45,11 @@ class SitefPaymentManager(
     }
 
     private val storage = LocalStorageManager(context)
+
+    /** A loja deste aparelho: a do cadastro do totem quando houver, senão a
+     *  padrão de sempre. Vazio no cadastro = nada muda. */
+    private fun codigoLoja(): String =
+        storage.getSitefLoja()?.trim()?.takeIf { it.isNotBlank() } ?: CODIGO_LOJA_PADRAO
 
     fun isSitefAvailable(): Boolean {
         return try {
@@ -98,7 +110,7 @@ class SitefPaymentManager(
         val intent = Intent(SITEF_ACTION).apply {
             `package` = SITEF_PACKAGE
 
-            putExtra("empresaSitef", EMPRESA_SITEF)
+            putExtra("empresaSitef", codigoLoja())
             putExtra("enderecoSitef", ENDERECO_SITEF)
             putExtra("CNPJ_CPF", CNPJ_CPF)
             putExtra("cnpj_automacao", CNPJ_AUTOMACAO)

@@ -68,7 +68,8 @@ class BootstrapRepository {
                                     companyId = company?.optString("id"),
                                     locationId = location?.optString("id"),
                                     sitefOtp = totem?.optString("sitef_otp"),
-                                    sitefTerminalId = totem?.optString("sitef_terminal_id")
+                                    sitefTerminalId = totem?.optString("sitef_terminal_id"),
+                                    sitefLoja = totem?.optString("sitef_loja")
                                 )
                             )
                         } catch (e: Exception) {
