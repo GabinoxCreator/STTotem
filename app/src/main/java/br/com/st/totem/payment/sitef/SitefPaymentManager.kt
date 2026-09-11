@@ -49,7 +49,7 @@ class SitefPaymentManager(
     /** A loja deste aparelho: a do cadastro do totem quando houver, senão a
      *  padrão de sempre. Vazio no cadastro = nada muda. */
     private fun codigoLoja(): String =
-        storage.getSitefLoja()?.trim()?.takeIf { it.isNotBlank() } ?: CODIGO_LOJA_PADRAO
+        storage.getSitefLoja()?.trim()?.takeIf { it.isNotBlank() && it != "null" } ?: CODIGO_LOJA_PADRAO
 
     fun isSitefAvailable(): Boolean {
         return try {

@@ -10,6 +10,24 @@ import okhttp3.Response
 import org.json.JSONObject
 import java.io.IOException
 
+/**
+ * Lê um texto do JSON tratando o NULO DE VERDADE.
+ *
+ * ⚠️ POR QUE ISTO EXISTE, e custou um totem parado em 11/09/2026: o
+ * `optString` do org.json, quando o campo vem `null` no JSON, NÃO devolve null
+ * nem vazio — devolve a STRING "null", com quatro letras. Ela passa em qualquer
+ * teste de "está preenchido?" e viaja como se fosse valor.
+ *
+ * Foi o que aconteceu com a loja do SiTef: o totem da Porcada não tinha loja
+ * (o certo, porque vazio significa "usa a loja de sempre"), o app guardou a
+ * palavra "null", o fallback para THEO0167 nunca rodou, e a `configure()` do
+ * CliSiTef recusou com código 2 — sem nem acender o pinpad. Os 4 campos abaixo
+ * corriam o mesmo risco: OTP, terminal, loja e localização.
+ */
+private fun JSONObject.textoOuNulo(campo: String): String? =
+    if (isNull(campo)) null
+    else optString(campo).trim().takeIf { it.isNotBlank() && it != "null" }
+
 class BootstrapRepository {
 
     private val client = OkHttpClient()
@@ -67,9 +85,9 @@ class BootstrapRepository {
                                     totemId = totem?.optString("id"),
                                     companyId = company?.optString("id"),
                                     locationId = location?.optString("id"),
-                                    sitefOtp = totem?.optString("sitef_otp"),
-                                    sitefTerminalId = totem?.optString("sitef_terminal_id"),
-                                    sitefLoja = totem?.optString("sitef_loja")
+                                    sitefOtp = totem?.textoOuNulo("sitef_otp"),
+                                    sitefTerminalId = totem?.textoOuNulo("sitef_terminal_id"),
+                                    sitefLoja = totem?.textoOuNulo("sitef_loja")
                                 )
                             )
                         } catch (e: Exception) {

@@ -170,7 +170,7 @@ class CliSitefManager(
 
         val terminalId = storage.getSitefTerminalId()?.trim()?.takeIf { it.isNotBlank() } ?: CNPJ_AUTOMACAO
         // A loja deste aparelho: a do cadastro quando houver, senão a de sempre.
-        val codigoLoja = storage.getSitefLoja()?.trim()?.takeIf { it.isNotBlank() } ?: CODIGO_LOJA_PADRAO
+        val codigoLoja = storage.getSitefLoja()?.trim()?.takeIf { it.isNotBlank() && it != "null" } ?: CODIGO_LOJA_PADRAO
 
         Log.i(TAG, "╔══════════════════════════════════════════════")
         Log.i(TAG, "║ startPayment method=$paymentMethod modal=$modalidade")
