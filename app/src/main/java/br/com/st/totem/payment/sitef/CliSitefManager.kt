@@ -11,6 +11,7 @@ import br.com.st.totem.LocalStorageManager
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -39,6 +40,16 @@ import java.util.concurrent.atomic.AtomicBoolean
  *     finalizar dentro do prazo de carência.
  *  6. RESULTADO ÚNICO — finalResultDispatched garante que só o primeiro desfecho
  *     (resultado real OU watchdog) seja despachado; o segundo é ignorado.
+ *  7. NADA DO SDK NA LINHA DA TELA (OS-171, 07/10/2026): o SDK entrega onData e
+ *     onTransactionResult na linha da tela (FuncoesInternas posta no Looper
+ *     principal). configure, startTransaction e finishTransaction podem esperar
+ *     a rede; abortTransaction, como as duas últimas, é `synchronized` no objeto
+ *     do SDK e esperaria qualquer uma delas em curso. Por isso as quatro rodam na
+ *     fila do SiTef ([filaDoSitef]). Antes, a confirmação (finishTransaction)
+ *     rodava dentro do onTransactionResult, na tela: com internet ruim a tela
+ *     ficava presa esperando o servidor. O abort, que vem da página pela ponte
+ *     (linha da ponte do WebView) ou do relógio (tela), também não espera mais.
+ *     O desfecho continua voltando pela tela (dispatch*), uma vez só.
  */
 class CliSitefManager(
     private val context: Context,
@@ -75,6 +86,20 @@ class CliSitefManager(
         private const val WATCHDOG_PIX_TIMEOUT_MS  = 320_000L
         // Carência para o abort fechar o ciclo antes de liberarmos o slot na marra.
         private const val WATCHDOG_ABORT_GRACE_MS  = 10_000L
+
+        // A fila do SiTef (OS-171): UMA linha de fundo para o app inteiro, onde
+        // rodam todas as chamadas ao SDK que podem esperar a rede. Uma só, porque
+        // a biblioteca nativa é uma só no processo: se o app se reinicia por
+        // dentro (restartForNativeReset) com uma chamada ainda em curso, a venda
+        // seguinte espera a vez dela em vez de entrar na biblioteca ao mesmo tempo.
+        private val filaDoSitef: ExecutorService = Executors.newSingleThreadExecutor { tarefa ->
+            Thread(tarefa, "STTotem-SiTef")
+        }
+
+        // O que o SDK devolve quando abriu a etapa iterativa (o resultado vem
+        // depois, pelo onTransactionResult). Qualquer outro retorno de
+        // startTransaction/finishTransaction NÃO gera onTransactionResult.
+        private const val ITERATIVO_EM_CURSO = 10000
     }
 
     // ✅ Instância ÚNICA — criada uma vez, NUNCA destruída/recriada.
@@ -83,7 +108,7 @@ class CliSitefManager(
         CliSiTef(context)
     }
 
-    private val executor    = Executors.newSingleThreadExecutor()
+    private val executor    = filaDoSitef
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private val resultFields = mutableMapOf<String, String>()
@@ -213,10 +238,13 @@ class CliSitefManager(
                 Log.i(TAG, "configure OK — iniciando transação")
                 dispatchState(PaymentState.Processing)
 
-                cliSiTef.startTransaction(
+                val inicio = cliSiTef.startTransaction(
                     listener, modalidade, valorStr, cupom,
                     dataFiscal, horaFiscal, OPERADOR, restricoes
                 )
+                if (inicio != ITERATIVO_EM_CURSO) {
+                    Log.w(TAG, "startTransaction devolveu $inicio: sem etapa iterativa, nenhum onTransactionResult vai chegar")
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Exceção durante transação", e)
                 dispatchFinalResult(false, -99, e.message ?: "Erro desconhecido")
@@ -229,6 +257,10 @@ class CliSitefManager(
     /**
      * Sinaliza ao SDK que a transação deve ser cancelada. Não destrói nem anula
      * nada — a finalização real vem via onTransactionResult.
+     *
+     * Volta na hora (OS-171): o abortTransaction(-1) entra na fila do SiTef,
+     * porque é `synchronized` no objeto do SDK e esperaria qualquer chamada em
+     * curso, como uma confirmação presa na rede. A carência de 10 s conta daqui.
      */
     fun abort() {
         if (!isTransactionActive.get()) {
@@ -239,7 +271,7 @@ class CliSitefManager(
             Log.d(TAG, "abort() ignorado — abort já em curso")
             return
         }
-        Log.d(TAG, "abort() — chamando abortTransaction(-1), aguardando onTransactionResult")
+        Log.d(TAG, "abort(): abortTransaction(-1) na fila do SiTef, aguardando onTransactionResult")
         hadMidTransactionAbort = true
 
         // Carência: se o abort drenar e o onTransactionResult chegar, o
@@ -249,11 +281,14 @@ class CliSitefManager(
         mainHandler.removeCallbacks(watchdogForceReleaseRunnable)
         mainHandler.postDelayed(watchdogForceReleaseRunnable, WATCHDOG_ABORT_GRACE_MS)
 
-        try {
-            cliSiTef.abortTransaction(-1)
-        } catch (e: Exception) {
-            Log.w(TAG, "Falha ao chamar abortTransaction: ${e.message}")
-            dispatchFinalResult(false, -100, "Falha ao abortar: ${e.message}")
+        executor.execute {
+            try {
+                val r = cliSiTef.abortTransaction(-1)
+                Log.d(TAG, "abortTransaction(-1) devolveu $r")
+            } catch (e: Throwable) {
+                Log.w(TAG, "Falha ao chamar abortTransaction: ${e.message}")
+                dispatchFinalResult(false, -100, "Falha ao abortar: ${e.message}")
+            }
         }
     }
 
@@ -380,12 +415,24 @@ class CliSitefManager(
                 }
                 resultCode in 0..1 && p1 in setOf(0, 90, 255) && !lastStage1Approved -> {
                     lastStage1Approved = true
-                    try {
-                        Log.d(TAG, "finishTransaction(1) — confirmando... p1=$p1")
-                        cliSiTef.finishTransaction(1)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "finishTransaction error", e)
-                        dispatchFinalResult(false, -100, "Erro ao confirmar: ${e.message}")
+                    // OS-171: a confirmação conversa com o servidor SiTef e pode
+                    // esperar a rede: vai para a fila do SiTef, nunca aqui (este
+                    // callback roda na linha da tela). O resultado da etapa 1 é um
+                    // sinal do SDK, então o relógio de segurança recomeça daqui.
+                    armWatchdog()
+                    executor.execute {
+                        try {
+                            Log.d(TAG, "finishTransaction(1): confirmando na fila do SiTef... p1=$p1")
+                            val r = cliSiTef.finishTransaction(1)
+                            if (r == ITERATIVO_EM_CURSO) {
+                                Log.d(TAG, "finishTransaction(1) devolveu $r: etapa 2 em curso")
+                            } else {
+                                Log.w(TAG, "finishTransaction(1) devolveu $r: sem etapa 2, nenhum onTransactionResult vai chegar")
+                            }
+                        } catch (e: Throwable) {
+                            Log.e(TAG, "finishTransaction error", e)
+                            dispatchFinalResult(false, -100, "Erro ao confirmar: ${e.message}")
+                        }
                     }
                 }
                 resultCode in 0..1 && p1 !in setOf(0, 90, 255) && !lastStage1Approved -> {
