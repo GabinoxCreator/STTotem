@@ -10,6 +10,32 @@ import okhttp3.Response
 import org.json.JSONObject
 import java.io.IOException
 
+/**
+ * Lê a resposta da `totem-activate` (totem-web). Sem `activation_token` não há
+ * ativação: falha alto. Antes, `optString("activation_token", null)` devolvia a
+ * PALAVRA "null" se o campo viesse nulo, e ela passava no teste de "vazio" da tela.
+ * Ver `ContratoAtivacaoTest` (OS-161).
+ */
+internal fun lerRespostaAtivacao(corpo: String): ActivationResponse {
+    val json = JSONObject(corpo)
+    if (json.logico("success") != true) {
+        throw RespostaInvalida(json.texto("error") ?: "Ativação inválida")
+    }
+    val totem = json.optJSONObject("totem")
+    return ActivationResponse(
+        success = true,
+        // Mesmo texto que a tela de ativação já mostrava para token vazio.
+        activationToken = json.texto("activation_token")
+            ?: throw RespostaInvalida("Token de ativação não retornado."),
+        // O bootstrap logo em seguida confirma e regrava estes quatro.
+        totemId = totem?.texto("id"),
+        companyId = json.optJSONObject("company")?.texto("id"),
+        locationId = json.optJSONObject("location")?.texto("id"),
+        identifier = totem?.texto("identifier"),
+        rawJson = corpo
+    )
+}
+
 class ActivationRepository {
 
     private val client = OkHttpClient()
@@ -53,30 +79,9 @@ class ActivationRepository {
                         }
 
                         try {
-                            val bodyJson = JSONObject(bodyString)
-
-                            val success = bodyJson.optBoolean("success", false)
-                            if (!success) {
-                                onError(bodyJson.optString("error", "Ativação inválida"))
-                                return
-                            }
-
-                            val totem = bodyJson.optJSONObject("totem")
-                            val company = bodyJson.optJSONObject("company")
-                            val location = bodyJson.optJSONObject("location")
-
-                            val result = ActivationResponse(
-                                success = true,
-                                activationToken = bodyJson.optString("activation_token", null),
-                                totemId = totem?.optString("id"),
-                                companyId = company?.optString("id"),
-                                locationId = location?.optString("id"),
-                                identifier = totem?.optString("identifier"),
-                                rawJson = bodyString
-                            )
-
-                            onSuccess(result)
-
+                            onSuccess(lerRespostaAtivacao(bodyString))
+                        } catch (e: RespostaInvalida) {
+                            onError(e.message ?: "Ativação inválida")
                         } catch (e: Exception) {
                             onError("Erro ao processar resposta da ativação: ${e.message ?: bodyString}")
                         }

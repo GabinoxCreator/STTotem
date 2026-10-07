@@ -93,6 +93,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private var isPrintingNow = false
+    // OS-161: ficha que a impressora confirmou mas o servidor ainda não recebeu como "printed".
+    @Volatile private var impressoSemRegistro: PrintJob? = null
+    @Volatile private var tentativasImpressoSemRegistro = 0
+    private val maxTentativasImpressoSemRegistro = 15
     private var kioskModeEnabled = true
     private var kioskModeStartedOnce = false
 
@@ -548,6 +552,12 @@ class MainActivity : AppCompatActivity() {
                     // nem vai pra ActivationActivity. Token preservado; mostra "reconectando"
                     // e reagenda com backoff até o bootstrap voltar. Os loops religam no sucesso.
                     Log.w("STTotem", "Bootstrap falhou (transitório, token preservado): $message")
+                    // OS-161: resposta sem o que o app precisa (ex.: sem totem) não é rede:
+                    // fica no totem_logs para alguém ver, sem apagar nada.
+                    if (message.startsWith("Resposta inválida")) {
+                        sendLogLimitado("bootstrap_resposta_invalida", "bootstrap", "resposta_invalida",
+                            JSONObject().put("erro", message.take(300)), "error")
+                    }
                     bootstrapLoaded = false
                     stopHeartbeatLoop(); stopPrintQueueLoop()
                     showError("Sem conexão", "Reconectando…")
@@ -578,6 +588,14 @@ class MainActivity : AppCompatActivity() {
     private fun pollPrintQueue() {
         if (isPrintingNow) return
         val token = storage.getActivationToken() ?: return
+        // Ficha que saiu e o servidor ainda não sabe: grava ANTES de buscar a fila,
+        // porque é na busca que o servidor marca como falha o job esquecido em
+        // "printing" há 30 s (e aí a ficha que saiu viraria "falhou").
+        impressoSemRegistro?.let { pendente ->
+            isPrintingNow = true
+            gravarImpresso(token, pendente)
+            return
+        }
         printQueueRepository.fetchPendingJobs(
             activationToken = token,
             onSuccess = { jobs ->
@@ -590,8 +608,8 @@ class MainActivity : AppCompatActivity() {
                         val timeoutMs = computePrintTimeoutMs(job)
                         dispatchPrintStatusToWeb(status = "started", job = job, message = "Imprimindo")
                         val timeoutRunnable = Runnable {
-                            dispatchPrintStatusToWeb(status = "failed", job = job, message = "Timeout", error = "timeout")
-                            printQueueRepository.updateJobStatus(activationToken = token, jobId = job.id, status = "failed", errorMessage = "timeout", onSuccess = { isPrintingNow = false }, onError = { isPrintingNow = false })
+                            registrarFalhaImpressao(token, job,
+                                MotivoFalhaImpressao.SEM_CONFIRMACAO.marcar("tempo total do trabalho esgotado (${timeoutMs / 1000} s)"))
                         }
                         currentPrintTimeoutRunnable = timeoutRunnable
                         printTimeoutHandler.postDelayed(timeoutRunnable, timeoutMs)
@@ -600,14 +618,15 @@ class MainActivity : AppCompatActivity() {
                                 job = job,
                                 onSuccess = {
                                     cancelPrintTimeout()
-                                    printQueueRepository.updateJobStatus(activationToken = token, jobId = job.id, status = "printed",
-                                        onSuccess = { isPrintingNow = false; dispatchPrintStatusToWeb(status = "completed", job = job, message = "Concluído") },
-                                        onError = { isPrintingNow = false; dispatchPrintStatusToWeb(status = "failed", job = job, message = "Falha", error = it) })
+                                    // A impressora confirmou o corte de cada ficha: saiu.
+                                    // A tela diz isso já; o servidor recebe "printed" (com
+                                    // nova tentativa se a internet falhar, ver gravarImpresso).
+                                    dispatchPrintStatusToWeb(status = "completed", job = job, message = "Concluído")
+                                    gravarImpresso(token, job)
                                 },
                                 onError = { error ->
                                     cancelPrintTimeout()
-                                    dispatchPrintStatusToWeb(status = "failed", job = job, message = "Falha", error = error)
-                                    printQueueRepository.updateJobStatus(activationToken = token, jobId = job.id, status = "failed", errorMessage = error, onSuccess = { isPrintingNow = false }, onError = { isPrintingNow = false })
+                                    registrarFalhaImpressao(token, job, error)
                                 }
                             )
                         }
@@ -615,7 +634,66 @@ class MainActivity : AppCompatActivity() {
                     onError = { isPrintingNow = false; dispatchPrintStatusToWeb(status = "failed", job = job, message = "Falha ao iniciar", error = "update_status_printing_failed") }
                 )
             },
-            onError = { error -> Log.e("STTotem", "Erro fila impressão: $error") }
+            onError = { error ->
+                Log.e("STTotem", "Erro fila impressão: $error")
+                // OS-161: resposta que o app não sabe ler trava a impressão inteira.
+                // Falha de rede é rotina (não loga); leitura quebrada vai para o servidor.
+                if (error.startsWith("Resposta inválida") || error.startsWith("Erro ao processar")) {
+                    sendLogLimitado("fila_resposta_invalida", "impressao", "fila_resposta_invalida",
+                        JSONObject().put("erro", error.take(300)), "error")
+                }
+            }
+        )
+    }
+
+    // OS-161: a ficha NÃO saiu, ou a impressora não confirmou. A tela mostra a causa
+    // (TextosImpressao), o servidor recebe "failed" com o motivo entre colchetes e o
+    // totem_logs guarda o caso. Não reimprime sozinho (pode ter saído papel) e não mexe
+    // no pedido nem no pagamento: quem resolve é o atendente, pela reimpressão.
+    private fun registrarFalhaImpressao(token: String, job: PrintJob, erro: String) {
+        val motivo = MotivoFalhaImpressao.de(erro)
+        Log.e("PRINT_DEBUG", "Ficha não saiu | job=${job.id} | motivo=${motivo.codigo} | $erro")
+        dispatchPrintStatusToWeb(status = "failed", job = job, message = TextosImpressao.tela(motivo), error = erro)
+        sendLog("impressao", "falha", JSONObject()
+            .put("job_id", job.id)
+            .put("order_id", job.order_id ?: "")
+            .put("tipo", job.type ?: "")
+            .put("motivo", motivo.codigo)
+            .put("erro", erro.take(300)), "error")
+        printQueueRepository.updateJobStatus(
+            activationToken = token, jobId = job.id, status = "failed", errorMessage = erro.take(500),
+            onSuccess = { isPrintingNow = false }, onError = { isPrintingNow = false })
+    }
+
+    // OS-161: grava "printed" no servidor. Se falhar, guarda o job em
+    // impressoSemRegistro e tenta de novo a cada busca da fila (2 s), antes de
+    // buscar outro job. Desiste depois de maxTentativasImpressoSemRegistro para não
+    // travar a fila por um job que o servidor recusa de vez.
+    private fun gravarImpresso(token: String, job: PrintJob) {
+        printQueueRepository.updateJobStatus(
+            activationToken = token, jobId = job.id, status = "printed",
+            onSuccess = {
+                impressoSemRegistro = null
+                tentativasImpressoSemRegistro = 0
+                isPrintingNow = false
+            },
+            onError = { erro ->
+                tentativasImpressoSemRegistro += 1
+                if (tentativasImpressoSemRegistro == 1) {
+                    sendLog("impressao", "impresso_sem_registro", JSONObject()
+                        .put("job_id", job.id)
+                        .put("order_id", job.order_id ?: "")
+                        .put("erro", erro.take(300)), "warn")
+                }
+                if (tentativasImpressoSemRegistro >= maxTentativasImpressoSemRegistro) {
+                    Log.e("PRINT_DEBUG", "Ficha saiu, mas o servidor não aceitou o 'printed' depois de $tentativasImpressoSemRegistro tentativas: $erro")
+                    impressoSemRegistro = null
+                    tentativasImpressoSemRegistro = 0
+                } else {
+                    impressoSemRegistro = job
+                }
+                isPrintingNow = false
+            }
         )
     }
 
@@ -792,6 +870,19 @@ class MainActivity : AppCompatActivity() {
      * Assíncrono e fire-and-forget: nunca bloqueia o fluxo, e qualquer erro é
      * engolido em silêncio. NUNCA passar dado sensível (PAN, senha, CVV, trilha).
      */
+    // OS-161: erro de leitura do servidor vai para o totem_logs no máximo uma vez a
+    // cada 10 min por tipo (a fila pergunta a cada 2 s; o bootstrap repete com espera).
+    private val ultimoLogPorChave = HashMap<String, Long>()
+    private fun sendLogLimitado(chave: String, stage: String, event: String, detail: JSONObject, severity: String) {
+        val agora = System.currentTimeMillis()
+        synchronized(ultimoLogPorChave) {
+            val ultimo = ultimoLogPorChave[chave]
+            if (ultimo != null && agora - ultimo < 10 * 60_000L) return
+            ultimoLogPorChave[chave] = agora
+        }
+        sendLog(stage, event, detail, severity)
+    }
+
     private fun sendLog(
         stage: String,
         event: String,
