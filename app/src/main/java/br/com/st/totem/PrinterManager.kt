@@ -24,6 +24,13 @@ class PrinterManager(
 ) {
 
     private var printer: Printer? = null
+
+    // OS-161: quem diz que a ficha saiu é a impressora (Printer.Listener), não o
+    // getStatus(). Ver ConfirmacaoImpressora.
+    private val confirmacao = ConfirmacaoImpressora()
+    // Uma ficha: desenhar o HTML (a EasyLayer desiste em 5 s) + imprimir + cortar.
+    // Folga larga de propósito: falhar cedo demais gera reimpressão de ficha que saiu.
+    private val confirmacaoPrazoMs = 25_000L
     // MUDANÇA: cliente HTTP para baixar a logo
     private val httpClient = OkHttpClient()
 
@@ -58,12 +65,17 @@ class PrinterManager(
             printer = Printer.getInstance(context, object : Printer.Listener {
                 override fun onPrinterError(error: PrinterError) {
                     val message = mapPrinterError(error)
-                    Log.e("PrinterManager", "Erro na impressora: $message")
+                    Log.e("PrinterManager", "Erro na impressora: $message | pedido=${error.requestId} | causa=${error.cause}")
+                    // Antes este erro só ia para o logcat e a ficha seguia como impressa.
+                    confirmacao.aoFalhar(error.requestId, error.cause ?: message)
                     onError(message)
                 }
 
+                // O número que chega aqui é o do PEDIDO que a impressora terminou
+                // (o mesmo devolvido por printHtml/printImage/scrollPaper/cutPaper).
                 override fun onPrinterSuccessful(status: Int) {
-                    Log.d("PrinterManager", "Impressora pronta: $status")
+                    Log.d("PrinterManager", "Impressora confirmou o pedido $status")
+                    confirmacao.aoConfirmar(status)
                 }
             })
 
@@ -153,6 +165,17 @@ class PrinterManager(
         onSuccess: () -> Unit,
         onError: (String) -> Unit
     ) {
+        // Um trabalho por vez (printExecutor tem uma thread só): o que a impressora
+        // confirmar ou recusar daqui até o fim é deste trabalho.
+        confirmacao.abrir()
+        val concluir: () -> Unit = {
+            confirmacao.fechar()
+            onSuccess()
+        }
+        val falhar: (String) -> Unit = { erro ->
+            confirmacao.fechar()
+            onError(erro)
+        }
         try {
             val payload = job.payload
             val jobType = normalizeNullable(job.type)?.lowercase()
@@ -175,47 +198,47 @@ class PrinterManager(
             when {
                 jobType == "receipt" -> {
                     Log.d("PRINT_DEBUG", "Roteando para printSummaryReceipt() por type=receipt")
-                    printSummaryReceipt(job, onSuccess, onError)
+                    printSummaryReceipt(job, concluir, falhar)
                 }
 
                 jobType == "ticket" -> {
                     Log.d("PRINT_DEBUG", "Roteando para printStyledTicket()")
-                    printStyledTicket(job, onSuccess, onError)
+                    printStyledTicket(job, concluir, falhar)
                 }
 
                 jobType == "ingresso" -> {
                     Log.d("PRINT_DEBUG", "Roteando para printIngresso()")
-                    printIngresso(job, onSuccess, onError)
+                    printIngresso(job, concluir, falhar)
                 }
 
                 jobType == "bingo_card" -> {
                     Log.d("PRINT_DEBUG", "Roteando para printBingoCard()")
-                    printBingoCard(job, onSuccess, onError)
+                    printBingoCard(job, concluir, falhar)
                 }
 
                 hasTickets && shouldPrintCustomerReceipt -> {
                     Log.d("PRINT_DEBUG", "Roteando para printSummaryPlusTickets()")
-                    printSummaryPlusTickets(job, onSuccess, onError)
+                    printSummaryPlusTickets(job, concluir, falhar)
                 }
 
                 hasTickets && !shouldPrintCustomerReceipt -> {
                     Log.d("PRINT_DEBUG", "Roteando para printVoucherTickets()")
-                    printVoucherTickets(job, onSuccess, onError)
+                    printVoucherTickets(job, concluir, falhar)
                 }
 
                 forceConsolidatedReceipt || effectivePrintMode == "consolidated" || hasItems -> {
                     Log.d("PRINT_DEBUG", "Roteando para printSummaryReceipt() por modo/items")
-                    printSummaryReceipt(job, onSuccess, onError)
+                    printSummaryReceipt(job, concluir, falhar)
                 }
 
                 else -> {
                     Log.d("PRINT_DEBUG", "Fallback para printSummaryReceipt()")
-                    printSummaryReceipt(job, onSuccess, onError)
+                    printSummaryReceipt(job, concluir, falhar)
                 }
             }
         } catch (e: Exception) {
             Log.e("STTotem", "Falha ao rotear job ${job.id}", e)
-            onError("Falha ao processar job: ${e.message}")
+            falhar("Falha ao processar job: ${e.message}")
         }
     }
 
@@ -278,7 +301,8 @@ class PrinterManager(
                 Thread.sleep(voucherFlushDelayMs)
                 waitUntilPrinterReady(printerInstance, "apos_scroll_pre_cut_voucher_$ticketNumber")
 
-                printerInstance.cutPaper(CutType.PAPER_PARTIAL_CUT)
+                val corte = printerInstance.cutPaper(CutType.PAPER_PARTIAL_CUT)
+                confirmarFicha(corte, "voucher $ticketNumber/${tickets.size}")
                 Thread.sleep(voucherAfterCutDelayMs)
                 waitUntilPrinterReady(printerInstance, "apos_cut_voucher_$ticketNumber")
 
@@ -328,7 +352,8 @@ class PrinterManager(
             printerInstance.scrollPaper(summaryPostFeedLines)
             waitUntilPrinterReady(printerInstance, "apos_scroll_resumo")
 
-            printerInstance.cutPaper(CutType.PAPER_PARTIAL_CUT)
+            val corte = printerInstance.cutPaper(CutType.PAPER_PARTIAL_CUT)
+            confirmarFicha(corte, "resumo")
             Thread.sleep(summaryAfterCutDelayMs)
             waitUntilPrinterReady(printerInstance, "apos_cut_resumo")
 
@@ -412,7 +437,8 @@ class PrinterManager(
             printerInstance.scrollPaper(3)
             waitUntilPrinterReady(printerInstance, "apos_scroll_ticket_estilizado")
 
-            printerInstance.cutPaper(CutType.PAPER_PARTIAL_CUT)
+            val corte = printerInstance.cutPaper(CutType.PAPER_PARTIAL_CUT)
+            confirmarFicha(corte, "ficha")
             Thread.sleep(voucherAfterCutDelayMs)
             waitUntilPrinterReady(printerInstance, "apos_cut_ticket_estilizado")
 
@@ -456,7 +482,8 @@ class PrinterManager(
             printerInstance.scrollPaper(3)
             waitUntilPrinterReady(printerInstance, "apos_scroll_bingo")
 
-            printerInstance.cutPaper(CutType.PAPER_PARTIAL_CUT)
+            val corte = printerInstance.cutPaper(CutType.PAPER_PARTIAL_CUT)
+            confirmarFicha(corte, "cartela de bingo")
             Thread.sleep(voucherAfterCutDelayMs)
             waitUntilPrinterReady(printerInstance, "apos_cut_bingo")
 
@@ -595,7 +622,8 @@ class PrinterManager(
                 Thread.sleep(voucherFlushDelayMs)
                 waitUntilPrinterReady(printerInstance, "apos_scroll_pre_cut_ingresso_$n")
 
-                printerInstance.cutPaper(CutType.PAPER_PARTIAL_CUT)
+                val corte = printerInstance.cutPaper(CutType.PAPER_PARTIAL_CUT)
+                confirmarFicha(corte, "ingresso $n/${ingressos.size}")
                 Thread.sleep(voucherAfterCutDelayMs)
                 waitUntilPrinterReady(printerInstance, "apos_cut_ingresso_$n")
 
@@ -955,6 +983,36 @@ class PrinterManager(
         return htmlBuilder.toString()
     }
 
+    /**
+     * Espera a impressora confirmar o CORTE da ficha (o último pedido dela). Como a
+     * fila da EasyLayer anda em ordem, isso garante que o desenho e o avanço de papel
+     * de antes também passaram. Erro ou silêncio viram [FalhaImpressao]: o job vai
+     * para o servidor como `failed`, com o motivo, e a tela mostra a falha. Nunca
+     * reimprime sozinho (pode já ter saído papel). OS-161.
+     */
+    private fun confirmarFicha(numeroDoCorte: Int, oQue: String) {
+        when (val r = confirmacao.esperar(numeroDoCorte, confirmacaoPrazoMs)) {
+            is ConfirmacaoImpressora.Resultado.Confirmado ->
+                Log.d("PRINT_DEBUG", "Impressora confirmou: $oQue (pedido $numeroDoCorte)")
+            is ConfirmacaoImpressora.Resultado.Falhou -> throw FalhaImpressao(
+                motivoDoErroDaImpressora(r.causa),
+                "a impressora avisou erro em $oQue: ${r.causa}"
+            )
+            is ConfirmacaoImpressora.Resultado.SemResposta -> throw FalhaImpressao(
+                MotivoFalhaImpressao.SEM_CONFIRMACAO,
+                "a impressora não confirmou $oQue (pedido $numeroDoCorte) em ${r.prazoMs / 1000} s"
+            )
+        }
+    }
+
+    // A EasyLayer manda "Printer out of paper" quando reconhece a falta de papel;
+    // o resto chega como "Erro durante a impressão: <código>".
+    private fun motivoDoErroDaImpressora(causa: String): MotivoFalhaImpressao {
+        val texto = causa.lowercase()
+        return if ("out of paper" in texto || "sem papel" in texto) MotivoFalhaImpressao.SEM_PAPEL
+        else MotivoFalhaImpressao.ERRO_DA_IMPRESSORA
+    }
+
     private fun waitUntilPrinterReady(
         printerInstance: Printer,
         stage: String
@@ -970,7 +1028,9 @@ class PrinterManager(
 
             val elapsed = System.currentTimeMillis() - startedAt
             if (elapsed >= readyPollTimeoutMs) {
-                throw IllegalStateException(
+                throw FalhaImpressao(
+                    if (status == Status.OUT_OF_PAPER) MotivoFalhaImpressao.SEM_PAPEL
+                    else MotivoFalhaImpressao.ERRO_DA_IMPRESSORA,
                     "Impressora nao voltou para OK em '$stage'. Status=$status"
                 )
             }
@@ -987,7 +1047,7 @@ class PrinterManager(
     private fun requirePrinterInitialized(onError: (String) -> Unit): Printer? {
         val printerInstance = printer
         if (printerInstance == null) {
-            onError("Impressora nao inicializada")
+            onError(MotivoFalhaImpressao.OUTRO.marcar("Impressora nao inicializada"))
             return null
         }
         return printerInstance

@@ -98,6 +98,9 @@ dependencies {
     implementation("androidx.compose.material3:material3")
 
     testImplementation(libs.junit)
+    // OS-161: o org.json de verdade do Android nos testes de contrato (o do JVM puro
+    // devolve "" para campo nulo; o do aparelho devolve a palavra "null").
+    testImplementation("org.robolectric:robolectric:4.13")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 }

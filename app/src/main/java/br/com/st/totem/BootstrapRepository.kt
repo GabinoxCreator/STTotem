@@ -10,23 +10,40 @@ import okhttp3.Response
 import org.json.JSONObject
 import java.io.IOException
 
-/**
- * Lê um texto do JSON tratando o NULO DE VERDADE.
- *
- * ⚠️ POR QUE ISTO EXISTE, e custou um totem parado em 11/09/2026: o
- * `optString` do org.json, quando o campo vem `null` no JSON, NÃO devolve null
- * nem vazio — devolve a STRING "null", com quatro letras. Ela passa em qualquer
- * teste de "está preenchido?" e viaja como se fosse valor.
- *
- * Foi o que aconteceu com a loja do SiTef: o totem da Porcada não tinha loja
- * (o certo, porque vazio significa "usa a loja de sempre"), o app guardou a
- * palavra "null", o fallback para THEO0167 nunca rodou, e a `configure()` do
- * CliSiTef recusou com código 2 — sem nem acender o pinpad. Os 4 campos abaixo
- * corriam o mesmo risco: OTP, terminal, loja e localização.
+/*
+ * ⚠️ 11/09/2026: o `optString` do org.json devolve a PALAVRA "null" quando o campo
+ * vem nulo. A loja do SiTef do totem da Porcada virou "null", o padrão THEO0167 nunca
+ * rodou e a `configure()` do CliSiTef recusou com código 2. Desde a OS-161 toda leitura
+ * do servidor passa por `LeituraJson.kt` (texto / textoObrigatorio / ...).
  */
-private fun JSONObject.textoOuNulo(campo: String): String? =
-    if (isNull(campo)) null
-    else optString(campo).trim().takeIf { it.isNotBlank() && it != "null" }
+
+/**
+ * Lê a resposta da `totem-bootstrap` (totem-web). Falha alto ([RespostaInvalida])
+ * quando falta o que o app não tem como adivinhar: o próprio totem e o id dele.
+ * O resto da resposta (config, branding, form, home_config) é da página, não do app:
+ * ver `ContratoBootstrapTest`.
+ */
+internal fun lerRespostaBootstrap(corpo: String): BootstrapResponse {
+    val json = JSONObject(corpo)
+    if (json.logico("success") == false) {
+        throw RespostaInvalida(json.texto("error") ?: "Bootstrap inválido")
+    }
+    val totem = json.optJSONObject("totem")
+        ?: throw RespostaInvalida("campo 'totem' ausente na resposta do bootstrap")
+    return BootstrapResponse(
+        success = true,
+        rawJson = corpo,
+        identifier = totem.texto("identifier"),
+        totemId = totem.textoObrigatorio("id"),
+        companyId = json.optJSONObject("company")?.texto("id"),
+        locationId = json.optJSONObject("location")?.texto("id"),
+        // Nulo/vazio = o app usa o padrão dele (loja THEO0167; sem OTP/terminal o
+        // pagamento recusa na hora com mensagem). Nunca a palavra "null".
+        sitefOtp = totem.texto("sitef_otp"),
+        sitefTerminalId = totem.texto("sitef_terminal_id"),
+        sitefLoja = totem.texto("sitef_loja")
+    )
+}
 
 class BootstrapRepository {
 
@@ -65,31 +82,9 @@ class BootstrapRepository {
                         }
 
                         try {
-                            val bodyJson = JSONObject(bodyString)
-                            val success = bodyJson.optBoolean("success", true)
-
-                            if (!success) {
-                                onError(bodyJson.optString("error", "Bootstrap inválido"))
-                                return
-                            }
-
-                            val totem = bodyJson.optJSONObject("totem")
-                            val company = bodyJson.optJSONObject("company")
-                            val location = bodyJson.optJSONObject("location")
-
-                            onSuccess(
-                                BootstrapResponse(
-                                    success = true,
-                                    rawJson = bodyString,
-                                    identifier = totem?.optString("identifier"),
-                                    totemId = totem?.optString("id"),
-                                    companyId = company?.optString("id"),
-                                    locationId = location?.optString("id"),
-                                    sitefOtp = totem?.textoOuNulo("sitef_otp"),
-                                    sitefTerminalId = totem?.textoOuNulo("sitef_terminal_id"),
-                                    sitefLoja = totem?.textoOuNulo("sitef_loja")
-                                )
-                            )
+                            onSuccess(lerRespostaBootstrap(bodyString))
+                        } catch (e: RespostaInvalida) {
+                            onError("Resposta inválida do bootstrap: ${e.message}")
                         } catch (e: Exception) {
                             onError("Erro ao processar bootstrap: ${e.message ?: bodyString}")
                         }
