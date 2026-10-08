@@ -14,10 +14,12 @@ import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.util.Log
 import android.view.View
 import android.view.WindowManager
@@ -240,27 +242,45 @@ class MainActivity : AppCompatActivity() {
         pendingFacePagReferenceId = null; pendingFacePagAmountCents = null
     }
 
+    // OS-188 (08/10/2026): câmera negada na abertura NÃO pode deixar o totem parado.
+    // Antes o app mostrava o aviso e parava aqui, sem carregar a venda: um toque
+    // errado na instalação = totem morto no evento. A venda não precisa de câmera;
+    // a facial pede de novo na hora do uso (onPermissionRequest / startFacePagLiveness).
     private val appCameraPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         appCameraPermissionReady = granted
+        registrarRespostaDaCamera(granted, "abertura")
         if (!granted) {
-            Toast.makeText(this, "Permissão de câmera necessária.", Toast.LENGTH_LONG).show()
-            notifyWebCameraError("camera_permission_denied_on_startup")
-            return@registerForActivityResult
+            Toast.makeText(this, "Câmera não liberada: o totem vende normalmente e a facial pede de novo na hora do uso.", Toast.LENGTH_LONG).show()
         }
         continueAppStartup()
     }
+
+    /** Facial nativa sem câmera: pede antes de desistir (OS-188). */
+    private var depoisDaCameraParaFacial: ((Boolean) -> Unit)? = null
+    private val facePagCameraPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        registrarRespostaDaCamera(granted, "facial_nativa")
+        val seguir = depoisDaCameraParaFacial
+        depoisDaCameraParaFacial = null
+        seguir?.invoke(granted)
+    }
+
+    /** A equipe abriu as configurações do app pela área técnica: na volta, quiosque de novo. */
+    private var voltandoDasConfiguracoesDaCamera = false
 
     private val webCameraPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         val request = pendingCameraPermissionRequest
         pendingCameraPermissionRequest = null
+        registrarRespostaDaCamera(granted, "facial_web")
         if (request == null) return@registerForActivityResult
         if (!granted) {
             request.deny()
-            notifyWebCameraError("camera_permission_denied_for_webview")
+            notifyWebCameraError(if (cameraBloqueada()) "camera_permission_blocked" else "camera_permission_denied_for_webview")
             return@registerForActivityResult
         }
         val allowedResources = request.resources.filter { it == PermissionRequest.RESOURCE_VIDEO_CAPTURE }.toTypedArray()
@@ -477,6 +497,14 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         setupFullscreen()
         if (bootstrapLoaded) { startHeartbeatLoop(); startPrintQueueLoop() }
+        if (voltandoDasConfiguracoesDaCamera) {
+            voltandoDasConfiguracoesDaCamera = false
+            enterKioskMode()
+            val liberada = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+            if (liberada) { appCameraPermissionReady = true; marcarCameraBloqueada(false) }
+            sendLog("camera", "camera_volta_das_configuracoes", JSONObject().put("liberada", liberada))
+            notifyWebCameraStatus()
+        }
     }
 
     override fun onPause() {
@@ -502,6 +530,33 @@ class MainActivity : AppCompatActivity() {
         val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
         if (granted) { appCameraPermissionReady = true; continueAppStartup(); return }
         appCameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+    }
+
+    /**
+     * "Bloqueada" = negada com "não perguntar de novo": o Android recusa o pedido
+     * sem mostrar a janela, e só a área técnica libera (openCameraSettings).
+     * Só se sabe na hora da resposta (sem justificativa a mostrar logo depois de
+     * uma recusa), por isso fica guardado até a câmera ser liberada.
+     */
+    private fun registrarRespostaDaCamera(granted: Boolean, onde: String) {
+        val bloqueada = !granted && !shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)
+        marcarCameraBloqueada(bloqueada)
+        if (!granted) {
+            sendLog("camera", "camera_negada", JSONObject().put("onde", onde).put("bloqueada", bloqueada), "warn")
+        }
+    }
+
+    private fun cameraPrefs() = getSharedPreferences("sttotem_camera", Context.MODE_PRIVATE)
+    private fun marcarCameraBloqueada(bloqueada: Boolean) { cameraPrefs().edit().putBoolean("bloqueada", bloqueada).apply() }
+    private fun cameraBloqueada(): Boolean = cameraPrefs().getBoolean("bloqueada", false)
+
+    private fun cameraStatus(): String {
+        val liberada = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        return when {
+            liberada -> "granted"
+            cameraBloqueada() -> "blocked"
+            else -> "denied"
+        }
     }
 
     private fun continueAppStartup() {
@@ -836,6 +891,13 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread { binding.webView.evaluateJavascript(script, null) }
     }
 
+    /** Situação da câmera → página (área técnica): granted | denied | blocked. */
+    private fun notifyWebCameraStatus() {
+        val escapedStatus = JSONObject.quote(cameraStatus())
+        val script = "(function(){try{window.dispatchEvent(new CustomEvent('android-camera-status',{detail:{status:JSON.parse($escapedStatus)}}));}catch(e){}})();"
+        runOnUiThread { binding.webView.evaluateJavascript(script, null) }
+    }
+
     private fun startHeartbeatLoop() { handler.removeCallbacks(heartbeatRunnable); handler.post(heartbeatRunnable) }
     private fun stopHeartbeatLoop() { handler.removeCallbacks(heartbeatRunnable) }
 
@@ -999,20 +1061,55 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun startFacePagLiveness(referenceId: String, amountCents: Int, livenessSessionId: String, region: String, identityPoolId: String): Boolean {
+            val abrirFacial = {
+                pendingFacePagReferenceId = referenceId; pendingFacePagAmountCents = amountCents
+                val intent = Intent(this@MainActivity, FacePagCameraActivity::class.java).apply {
+                    putExtra("referenceId", referenceId); putExtra("amountCents", amountCents)
+                    putExtra("livenessSessionId", livenessSessionId)
+                    putExtra("region", region.ifBlank { "us-east-1" })
+                    putExtra("identityPoolId", identityPoolId)
+                }
+                facePagLauncher.launch(intent)
+            }
             val hasPermission = ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-            if (!hasPermission) {
-                dispatchFacePagResultToWeb(JSONObject().put("success", false).put("referenceId", referenceId).put("amountCents", amountCents).put("errorCode", "camera_permission_missing").put("message", "Permissão de câmera não concedida"))
-                return false
+            if (hasPermission) { abrirFacial(); return true }
+            // OS-188: sem câmera, pede antes de desistir (antes devolvia erro direto).
+            runOnUiThread {
+                depoisDaCameraParaFacial = { granted ->
+                    if (granted) abrirFacial()
+                    else dispatchFacePagResultToWeb(JSONObject().put("success", false).put("referenceId", referenceId).put("amountCents", amountCents)
+                        .put("errorCode", if (cameraBloqueada()) "camera_permission_blocked" else "camera_permission_missing")
+                        .put("message", "Permissão de câmera não concedida"))
+                }
+                facePagCameraPermissionLauncher.launch(Manifest.permission.CAMERA)
             }
-            pendingFacePagReferenceId = referenceId; pendingFacePagAmountCents = amountCents
-            val intent = Intent(this@MainActivity, FacePagCameraActivity::class.java).apply {
-                putExtra("referenceId", referenceId); putExtra("amountCents", amountCents)
-                putExtra("livenessSessionId", livenessSessionId)
-                putExtra("region", region.ifBlank { "us-east-1" })
-                putExtra("identityPoolId", identityPoolId)
-            }
-            facePagLauncher.launch(intent)
             return true
+        }
+
+        /** Situação da câmera para a área técnica: "granted" | "denied" | "blocked". */
+        @JavascriptInterface
+        fun getCameraStatus(): String = cameraStatus()
+
+        /**
+         * Só a área técnica (atrás do PIN) chama: câmera bloqueada com "não perguntar
+         * de novo" não tem outro caminho. Sai do quiosque para o Android deixar abrir
+         * as configurações do app; na volta (onResume) o quiosque religa sozinho e a
+         * página recebe 'android-camera-status'.
+         */
+        @JavascriptInterface
+        fun openCameraSettings() {
+            runOnUiThread {
+                sendLog("camera", "camera_abre_configuracoes", JSONObject().put("status", cameraStatus()))
+                voltandoDasConfiguracoesDaCamera = true
+                if (kioskModeEnabled) exitKioskMode()
+                try {
+                    startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)))
+                } catch (e: Exception) {
+                    Log.e("STTotem", "Falha ao abrir configurações do app", e)
+                    voltandoDasConfiguracoesDaCamera = false
+                    enterKioskMode()
+                }
+            }
         }
 
         @JavascriptInterface
