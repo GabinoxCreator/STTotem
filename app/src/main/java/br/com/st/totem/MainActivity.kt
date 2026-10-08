@@ -562,12 +562,64 @@ class MainActivity : AppCompatActivity() {
     private fun continueAppStartup() {
         setupWebView()
         if (!storage.isActivated()) { goToActivation(); return }
+        // OS-203: totem que já tem conta mas ainda não tem credencial de aparelho
+        // (app antigo atualizado por cima) se registra sozinho antes do bootstrap.
+        if (!storage.hasDeviceKey()) { adotarAparelho(); return }
         bootstrapWithToken()
     }
 
-    private fun goToActivation() {
-        startActivity(Intent(this, ActivationActivity::class.java))
+    private fun goToActivation(aviso: String? = null, conta: String? = null) {
+        startActivity(ActivationActivity.abrir(this, aviso, conta))
         finish()
+    }
+
+    /**
+     * Adoção (OS-203): o servidor cria o registro deste totem físico copiando OTP,
+     * terminal e loja da vaga em que ele já está, e devolve a credencial. Nada é
+     * digitado e nada é pedido ao Marcel. Falhou (rede, servidor)? Segue vendendo
+     * do jeito antigo e tenta de novo na próxima abertura: adoção nunca trava a venda.
+     */
+    private fun adotarAparelho() {
+        val token = storage.getActivationToken()
+        if (token.isNullOrBlank()) { goToActivation(); return }
+        if (!isOnline()) { bootstrapWithToken(); return }
+        showLoadingState()
+        DeviceAdoptRepository().adopt(
+            activationToken = token,
+            hardwareId = DeviceIdentity.hardwareId(this, storage),
+            appVersion = appVersionName,
+            onSuccess = { cred ->
+                runOnUiThread {
+                    storage.saveDeviceKey(cred.deviceKey)
+                    storage.saveAssetTag(cred.info?.assetTag)
+                    sendEvent("device_adopted", JSONObject().put("adopted", cred.adotado).put("asset_tag", cred.info?.assetTag ?: JSONObject.NULL))
+                    Log.i("STTotem", "Aparelho registrado (adoção=${cred.adotado})")
+                    bootstrapWithToken()
+                }
+            },
+            onError = { erro ->
+                runOnUiThread {
+                    Log.w("STTotem", "Adoção não deu agora (segue no jeito antigo): ${erro.mensagem}")
+                    sendLogLimitado("adocao_falhou", "ativacao", "adocao_falhou",
+                        JSONObject().put("status", erro.status ?: JSONObject.NULL).put("erro", erro.mensagem.take(200)), "warn")
+                    bootstrapWithToken()
+                }
+            }
+        )
+    }
+
+    /**
+     * Saiu da conta (OS-203): pelo painel (o bootstrap disse "revogado") ou pela
+     * área técnica (PIN de admin). Apaga SÓ a conta; OTP, terminal e loja ficam
+     * no aparelho. O totem vai para "Entrar na conta" com a faixa do motivo.
+     */
+    private fun sairDaConta(aviso: String?, conta: String?) {
+        storage.clearAccountLink()
+        bootstrapLoaded = false
+        resetBootstrapRetry()
+        stopHeartbeatLoop(); stopPrintQueueLoop(); cancelPrintTimeout()
+        sendEvent("account_left", JSONObject().put("reason", aviso ?: "site"))
+        goToActivation(aviso, conta)
     }
 
     private fun bootstrapWithToken() {
@@ -585,15 +637,31 @@ class MainActivity : AppCompatActivity() {
         showLoadingState()
         bootstrapRepository.bootstrap(
             activationToken = token,
+            deviceKey = storage.getDeviceKey(),
+            appVersion = appVersionName,
+            onRevoked = { saiu ->
+                runOnUiThread {
+                    Log.w("STTotem", "Bootstrap: totem desligado da conta pelo painel")
+                    sairDaConta(ActivationActivity.AVISO_DESLIGADO, saiu.nomeDaConta)
+                }
+            },
             onSuccess = { result ->
                 runOnUiThread {
                     storage.saveTotemId(result.totemId)
                     storage.saveCompanyId(result.companyId)
                     storage.saveLocationId(result.locationId)
                     storage.saveIdentifier(result.identifier)
-                    storage.saveSitefOtp(result.sitefOtp)
-                    storage.saveSitefTerminalId(result.sitefTerminalId)
-                    storage.saveSitefLoja(result.sitefLoja)
+                    // OS-203: com credencial de aparelho, vazio nunca apaga OTP/terminal.
+                    storage.saveSitefDoBootstrap(result.sitefOtp, result.sitefTerminalId, result.sitefLoja)
+                    storage.saveCompanyName(result.companyName)
+                    storage.saveAssetTag(result.aparelho?.assetTag)
+                    // Mandamos a credencial e o servidor não reconheceu (o /st trocou a
+                    // peça ou baixou o aparelho): esquece a credencial; na próxima
+                    // abertura o totem se registra de novo pela adoção. Venda segue.
+                    if (storage.hasDeviceKey() && result.aparelho == null) {
+                        Log.w("STTotem", "Credencial de aparelho não reconhecida pelo servidor; refaz a adoção na próxima abertura")
+                        storage.saveDeviceKey(null)
+                    }
                     bootstrapLoaded = true
                     resetBootstrapRetry() // sucesso: cancela retry pendente + zera backoff
                     sendEvent("app_opened", JSONObject().put("mode", "token_bootstrap"))
@@ -908,6 +976,7 @@ class MainActivity : AppCompatActivity() {
         if (!identifier.isNullOrBlank()) bodyJson.put("identifier", identifier)
         val req = Request.Builder().url("$functionsBaseUrl/totem-heartbeat").post(bodyJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
         if (!token.isNullOrBlank()) req.addHeader("x-activation-token", token)
+        storage.getDeviceKey()?.let { req.addHeader("x-device-key", it) } // OS-203: sinal de vida do aparelho
         httpClient.newCall(req.build()).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {}
             override fun onResponse(call: Call, response: Response) { response.close() }
@@ -1027,6 +1096,36 @@ class MainActivity : AppCompatActivity() {
         fun getDeviceSerial(): String {
             @Suppress("DEPRECATION")
             return try { Build.SERIAL ?: "unknown" } catch (_: Exception) { "unknown" }
+        }
+
+        /** OS-203: credencial do aparelho, para o site mandar `x-device-key`. Vazio = sem registro. */
+        @JavascriptInterface
+        fun getDeviceKey(): String = storage.getDeviceKey() ?: ""
+
+        /** OS-203: o que o app sabe do aparelho (rodapé e área técnica). Nunca o OTP. */
+        @JavascriptInterface
+        fun getDeviceInfo(): String = JSONObject()
+            .put("asset_tag", storage.getAssetTag() ?: JSONObject.NULL)
+            .put("sitef_terminal_id", storage.getSitefTerminalId() ?: JSONObject.NULL)
+            .put("has_otp", !storage.getSitefOtp().isNullOrBlank())
+            .put("app_version", appVersionName)
+            .put("hardware_id", storage.getHardwareId() ?: JSONObject.NULL)
+            .toString()
+
+        /**
+         * OS-203: "sair da conta" pelo lado nativo, chamado pelo site depois que o
+         * servidor confirmou (PIN de admin no `device-unlink`) ou disse "revogado".
+         * `motivoJson` = {reason, company_name}. Apaga SÓ a conta.
+         */
+        @JavascriptInterface
+        fun clearBinding(motivoJson: String?) {
+            val motivo = try { JSONObject(motivoJson ?: "{}") } catch (_: Exception) { JSONObject() }
+            val aviso = when (motivo.texto("reason")) {
+                "revoked" -> ActivationActivity.AVISO_DESLIGADO
+                "device_admin" -> ActivationActivity.AVISO_SAIU
+                else -> null
+            }
+            runOnUiThread { sairDaConta(aviso, motivo.texto("company_name")) }
         }
 
         @JavascriptInterface

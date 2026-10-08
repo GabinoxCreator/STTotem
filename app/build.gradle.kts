@@ -12,8 +12,8 @@ android {
         applicationId = "br.com.st.totem"
         minSdk = 26
         targetSdk = 35
-        versionCode = 32
-        versionName = "1.32.0"
+        versionCode = 34
+        versionName = "1.34.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

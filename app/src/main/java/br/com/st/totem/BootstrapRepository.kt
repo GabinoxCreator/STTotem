@@ -41,8 +41,25 @@ internal fun lerRespostaBootstrap(corpo: String): BootstrapResponse {
         // pagamento recusa na hora com mensagem). Nunca a palavra "null".
         sitefOtp = totem.texto("sitef_otp"),
         sitefTerminalId = totem.texto("sitef_terminal_id"),
-        sitefLoja = totem.texto("sitef_loja")
+        sitefLoja = totem.texto("sitef_loja"),
+        companyName = json.optJSONObject("company")?.texto("name"),
+        aparelho = lerInfoAparelho(json.optJSONObject("device_identity"))
     )
+}
+
+/**
+ * O servidor disse, com todas as letras, que este totem saiu da conta (OS-203).
+ * Só vale com credencial de aparelho: a `totem-bootstrap` só manda `revoked:true`
+ * para quem mandou `x-device-key`. Qualquer outra falha continua "passageira"
+ * (o totem tenta de novo e NUNCA apaga a conta por causa de um erro).
+ */
+data class SaiuDaConta(val nomeDaConta: String?)
+
+internal fun lerSaidaDaConta(status: Int, corpo: String?): SaiuDaConta? {
+    if (status != 401 || corpo.isNullOrBlank()) return null
+    val json = try { JSONObject(corpo) } catch (_: Exception) { return null }
+    if (json.logico("revoked") != true) return null
+    return SaiuDaConta(json.texto("company_name"))
 }
 
 class BootstrapRepository {
@@ -52,20 +69,29 @@ class BootstrapRepository {
     private val baseUrl = "https://buviakhfibcsamucnjwu.supabase.co/functions/v1"
     private val bootstrapUrl = "$baseUrl/totem-bootstrap"
 
+    /**
+     * `deviceKey` (OS-203): com ela o OTP, o terminal e a loja vêm do APARELHO, e
+     * a saída da conta pelo painel chega em `onRevoked`. Sem ela, como sempre.
+     */
     fun bootstrap(
         activationToken: String,
+        deviceKey: String? = null,
+        appVersion: String? = null,
         onSuccess: (BootstrapResponse) -> Unit,
-        onError: (String) -> Unit
+        onError: (String) -> Unit,
+        onRevoked: ((SaiuDaConta) -> Unit)? = null
     ) {
         try {
             val requestBody = "{}"
                 .toRequestBody("application/json; charset=utf-8".toMediaType())
 
-            val request = Request.Builder()
+            val builder = Request.Builder()
                 .url(bootstrapUrl)
                 .post(requestBody)
                 .addHeader("x-activation-token", activationToken)
-                .build()
+            if (!deviceKey.isNullOrBlank()) builder.addHeader("x-device-key", deviceKey)
+            if (!appVersion.isNullOrBlank()) builder.addHeader("x-app-version", appVersion)
+            val request = builder.build()
 
             client.newCall(request).enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
@@ -77,6 +103,11 @@ class BootstrapRepository {
                         val bodyString = it.body?.string().orEmpty()
 
                         if (!it.isSuccessful) {
+                            val saiu = if (!deviceKey.isNullOrBlank()) lerSaidaDaConta(it.code, bodyString) else null
+                            if (saiu != null && onRevoked != null) {
+                                onRevoked(saiu)
+                                return
+                            }
                             onError("Falha no bootstrap: HTTP ${it.code} - $bodyString")
                             return
                         }
