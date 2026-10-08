@@ -20,7 +20,11 @@ data class ActivationResponse(
     val locationId: String?,
     val identifier: String?,
     val rawJson: String? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    // OS-203: nome da conta (tela "Tudo pronto") e o aparelho, quando o app
+    // manda a credencial dele (x-device-key).
+    val companyName: String? = null,
+    val aparelho: InfoAparelho? = null
 )
 
 data class BootstrapResponse(
@@ -35,5 +39,8 @@ data class BootstrapResponse(
     // Codigo da LOJA no SiTef deste aparelho (nao e o terminal: terminal e o
     // numero do equipamento, acima). NULO/vazio = usa a loja padrao do app.
     val sitefLoja: String? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    // OS-203: nome da conta e o aparelho (só vem com x-device-key).
+    val companyName: String? = null,
+    val aparelho: InfoAparelho? = null
 )

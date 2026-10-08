@@ -76,6 +76,68 @@ class LocalStorageManager(context: Context) {
         return !getActivationToken().isNullOrBlank()
     }
 
+    // ── Grupo APARELHO (OS-203, 08/10/2026) ──────────────────────────────────
+    // A identidade do totem físico: nasce na "Ativação do aparelho" (código do
+    // /st) ou na adoção (app novo por cima do antigo) e NUNCA sai na troca de
+    // conta. OTP, terminal e loja do SiTef também são do aparelho: continuam nas
+    // chaves de sempre (sitef_*), só deixam de ser apagados ao sair da conta.
+
+    fun saveDeviceKey(value: String?) { prefs.edit().putString("device_key", value).apply() }
+
+    fun getDeviceKey(): String? = prefs.getString("device_key", null)?.takeIf { it.isNotBlank() }
+
+    fun hasDeviceKey(): Boolean = getDeviceKey() != null
+
+    fun saveHardwareId(value: String) { prefs.edit().putString("hardware_id", value).apply() }
+
+    fun getHardwareId(): String? = prefs.getString("hardware_id", null)?.takeIf { it.isNotBlank() }
+
+    /** Etiqueta da gestão (TT-012). Vazio nunca apaga a que já existe. */
+    fun saveAssetTag(value: String?) { if (!value.isNullOrBlank()) prefs.edit().putString("device_asset_tag", value).apply() }
+
+    fun getAssetTag(): String? = prefs.getString("device_asset_tag", null)?.takeIf { it.isNotBlank() }
+
+    /** Nome da conta em que o totem está (para a tela de sair/entrar mostrar). */
+    fun saveCompanyName(value: String?) { prefs.edit().putString("company_name", value).apply() }
+
+    fun getCompanyName(): String? = prefs.getString("company_name", null)?.takeIf { it.isNotBlank() }
+
+    /**
+     * Grava OTP, terminal e loja vindos do bootstrap, com a REGRA DE OURO do app
+     * novo: com credencial de aparelho, vazio NUNCA apaga o que já está guardado
+     * (o servidor também garante isso, aqui é a segunda trava). A loja vazia é
+     * legítima (= loja padrão), por isso só a loja segue o servidor sempre.
+     * Sem credencial de aparelho (antes da adoção) grava como sempre gravou.
+     */
+    fun saveSitefDoBootstrap(otp: String?, terminal: String?, loja: String?) {
+        if (hasDeviceKey()) {
+            if (!otp.isNullOrBlank()) saveSitefOtp(otp)
+            if (!terminal.isNullOrBlank()) saveSitefTerminalId(terminal)
+            saveSitefLoja(loja)
+        } else {
+            saveSitefOtp(otp)
+            saveSitefTerminalId(terminal)
+            saveSitefLoja(loja)
+        }
+    }
+
+    /**
+     * "Sair da conta" (OS-203): apaga SÓ o grupo da conta. O aparelho (device_key,
+     * identidade) e o SiTef (OTP, terminal, loja) ficam; por isso trocar de
+     * cliente não pede reset de OTP. O `clearActivation()` abaixo continua sendo
+     * o "zera tudo" do jeito antigo (app sem credencial de aparelho).
+     */
+    fun clearAccountLink() {
+        prefs.edit()
+            .remove("activation_token")
+            .remove("totem_id")
+            .remove("company_id")
+            .remove("location_id")
+            .remove("identifier")
+            .remove("company_name")
+            .apply()
+    }
+
     fun clearActivation() {
         prefs.edit()
             .remove("activation_token")
