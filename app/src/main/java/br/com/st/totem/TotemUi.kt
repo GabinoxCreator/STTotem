@@ -54,7 +54,24 @@ object TotemUi {
     private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
     private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
-    fun dp(ctx: Context, v: Number): Int = (v.toFloat() * ctx.resources.displayMetrics.density + 0.5f).toInt()
+    /**
+     * Medida do desenho (dp do SK-210 a 1,5 px por dp) convertida pela TELA FÍSICA,
+     * não pela densidade do Android. Assim o "tamanho de exibição" das
+     * configurações não aumenta nem corta a tela (achado no SK-210 em 08/10,
+     * OS-203: casinhas cortadas e teclado fora da tela). O desenho é 1080x1920;
+     * em tela de outro tamanho tudo encolhe ou cresce na proporção, sem vazar.
+     */
+    fun escala(ctx: Context): Float {
+        val m = ctx.resources.displayMetrics
+        val largura = minOf(m.widthPixels, m.heightPixels).toFloat()
+        val altura = maxOf(m.widthPixels, m.heightPixels).toFloat()
+        return minOf(largura / 1080f, altura / 1920f) * 1.5f
+    }
+
+    fun dp(ctx: Context, v: Number): Int = (v.toFloat() * escala(ctx) + 0.5f).toInt()
+
+    /** Tamanho de letra do desenho (sp a 1,5), também preso à tela física. */
+    fun letra(tv: TextView, sp: Float) = tv.setTextSize(TypedValue.COMPLEX_UNIT_PX, sp * escala(tv.context))
 
     // ---------- letras: Space Grotesk nos títulos e números, Inter no resto ----------
 
@@ -67,7 +84,7 @@ object TotemUi {
     fun texto(ctx: Context, s: CharSequence, sp: Float, cor: Int, peso: Peso = Peso.NORMAL, centro: Boolean = false) =
         TextView(ctx).apply {
             text = s
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, sp)
+            letra(this, sp)
             setTextColor(cor)
             if (centro) gravity = Gravity.CENTER
             typeface = fonte(ctx, when (peso) {

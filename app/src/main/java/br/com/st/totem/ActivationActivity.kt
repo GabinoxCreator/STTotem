@@ -10,7 +10,6 @@ import android.text.InputFilter
 import android.text.InputType
 import android.text.SpannableString
 import android.text.style.ForegroundColorSpan
-import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -186,7 +185,7 @@ class ActivationActivity : AppCompatActivity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
             filters = arrayOf(InputFilter.LengthFilter(6), InputFilter.AllCaps())
             setSingleLine()
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 43f)
+            TotemUi.letra(this, 43f)
             setTextColor(TotemUi.TINTA)
             setHintTextColor(TotemUi.CINZA)
             letterSpacing = 0.3f
